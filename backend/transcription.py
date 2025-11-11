@@ -4,9 +4,11 @@ Handles real-time audio transcription and maintains context buffer
 """
 import asyncio
 import logging
+import json
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
+from pathlib import Path
 import io
 
 import assemblyai as aai
@@ -22,6 +24,11 @@ class TranscriptionManager:
         self.api_key = config['assemblyai_api_key']
         self.buffer_duration = config['transcription']['buffer_duration_seconds']
 
+        # Context cache file
+        self.context_cache_file = Path(
+            config.get('transcription', {}).get('context_cache_file', '.context_cache.json')
+        )
+
         # Initialize AssemblyAI
         if self.api_key and self.api_key != "YOUR_ASSEMBLYAI_API_KEY_HERE":
             aai.settings.api_key = self.api_key
@@ -35,6 +42,9 @@ class TranscriptionManager:
 
     async def start(self):
         """Start the transcription service"""
+        # Load previous stream's context
+        self._load_context()
+
         if not self.api_key or self.api_key == "YOUR_ASSEMBLYAI_API_KEY_HERE":
             logger.warning("Skipping transcription start - no API key configured")
             return
@@ -60,6 +70,10 @@ class TranscriptionManager:
     async def stop(self):
         """Stop the transcription service"""
         self.is_running = False
+
+        # Save context for next stream
+        self._save_context()
+
         if self.transcriber:
             try:
                 self.transcriber.close()
@@ -116,3 +130,61 @@ class TranscriptionManager:
 
         except Exception as e:
             logger.error(f"Error processing audio: {e}", exc_info=True)
+
+    def _save_context(self):
+        """Save current context buffer to disk for next stream"""
+        try:
+            # Clean buffer first
+            self._clean_buffer()
+
+            # Convert to serializable format
+            context_data = {
+                'saved_at': datetime.now().isoformat(),
+                'buffer': [
+                    {
+                        'timestamp': ts.isoformat(),
+                        'text': text
+                    }
+                    for ts, text in self.context_buffer
+                ]
+            }
+
+            # Save to file
+            with open(self.context_cache_file, 'w') as f:
+                json.dump(context_data, f, indent=2)
+
+            logger.info(f"Saved {len(self.context_buffer)} context entries to {self.context_cache_file}")
+
+        except Exception as e:
+            logger.error(f"Error saving context: {e}", exc_info=True)
+
+    def _load_context(self):
+        """Load previous stream's context from disk"""
+        try:
+            if not self.context_cache_file.exists():
+                logger.info("No previous context cache found (first run)")
+                return
+
+            with open(self.context_cache_file, 'r') as f:
+                context_data = json.load(f)
+
+            # Load buffer entries
+            for entry in context_data.get('buffer', []):
+                timestamp = datetime.fromisoformat(entry['timestamp'])
+                text = entry['text']
+                self.context_buffer.append((timestamp, text))
+
+            # Clean any entries that are too old
+            self._clean_buffer()
+
+            saved_at = context_data.get('saved_at', 'unknown')
+            logger.info(f"Loaded {len(self.context_buffer)} context entries from previous stream (saved at {saved_at})")
+
+            if self.context_buffer:
+                context_preview = self.get_context()[:200]
+                logger.info(f"Previous context preview: {context_preview}...")
+
+        except Exception as e:
+            logger.error(f"Error loading context: {e}", exc_info=True)
+            # Clear buffer on error to avoid corrupt data
+            self.context_buffer.clear()

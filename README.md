@@ -137,6 +137,30 @@ In the Scripts panel:
 4. Click **"Update Headlines Now"** in the Scripts panel
 5. The ticker should update with contextually relevant news
 
+## How Context Works
+
+The system uses a smart **context persistence** approach:
+
+### First Stream (Cold Start)
+- **0-30 seconds**: Shows generic top news (no context yet)
+- **30+ seconds**: Transcription builds up, headlines become contextually relevant
+- **On stream end**: Context is saved to `.context_cache.json`
+
+### Subsequent Streams (Warm Start)
+- **Stream start**: Previous stream's context is loaded automatically
+- **Initial headlines**: Immediately relevant to your previous stream topic
+- **0-5 minutes**: New transcription gradually replaces old context (rolling buffer)
+- **5+ minutes**: All context is fresh from current stream
+- **10 minutes**: First automatic headline refresh with fully fresh context
+
+This means:
+✅ **No cold start problem** - Headlines are always relevant from the first update
+✅ **Smooth transitions** - If you stream similar topics, context carries over naturally
+✅ **Auto-refresh** - Old context is automatically purged after 5 minutes
+✅ **Privacy-friendly** - Context is stored locally in `.context_cache.json`
+
+**Example:** If you were streaming about AI yesterday and start a new stream about AI today, the initial headlines will already be AI-focused until new transcription takes over.
+
 ## Configuration
 
 ### Backend Configuration (`config.json`)

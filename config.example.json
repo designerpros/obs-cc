@@ -19,7 +19,8 @@
   },
   "transcription": {
     "buffer_duration_seconds": 300,
-    "language": "en"
+    "language": "en",
+    "context_cache_file": ".context_cache.json"
   },
   "news": {
     "refresh_interval_minutes": 10,

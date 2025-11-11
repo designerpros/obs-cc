@@ -26,6 +26,10 @@ wheels/
 # Environment variables
 .env
 config.local.json
+config.json
+
+# Context cache
+.context_cache.json
 
 # IDE
 .vscode/
