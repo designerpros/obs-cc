@@ -8,7 +8,11 @@ from typing import List, Dict
 from datetime import datetime
 
 import aiohttp
-import feedparser
+try:
+    import feedparser
+    FEEDPARSER_AVAILABLE = True
+except ImportError:
+    FEEDPARSER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,10 @@ class NewsFetcher:
 
     async def _fetch_rss_feeds(self) -> List[Dict]:
         """Fetch from various free RSS feeds"""
+        if not FEEDPARSER_AVAILABLE:
+            logger.warning("feedparser not available, skipping RSS feeds")
+            return []
+
         articles = []
 
         # Free RSS feeds
