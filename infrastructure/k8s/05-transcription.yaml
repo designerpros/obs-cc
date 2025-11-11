@@ -1,0 +1,162 @@
+# Transcription Worker with GPU Support
+# Whisper large-v3 + Pyannote speaker diarization
+
+---
+# Transcription Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcription
+  namespace: stream-pipeline
+  labels:
+    app: transcription
+    component: worker
+    gpu: required
+spec:
+  replicas: 2  # 2 transcription workers (can scale based on GPU availability)
+  selector:
+    matchLabels:
+      app: transcription
+  template:
+    metadata:
+      labels:
+        app: transcription
+        component: worker
+        gpu: required
+    spec:
+      # Node affinity: Schedule on GPU nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu
+                operator: Exists
+
+      containers:
+      - name: transcription
+        image: stream-pipeline-transcription:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9091
+          name: metrics
+        env:
+        # Database
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "stream_extraction"
+        - name: POSTGRES_USER
+          value: "pipeline_worker"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: POSTGRES_PASSWORD
+
+        # Redis
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: REDIS_PASSWORD
+
+        # GPU (set by k8s GPU device plugin)
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"  # Will be overridden by k8s
+
+        # Hugging Face token (for Pyannote)
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: HF_TOKEN
+
+        # AssemblyAI fallback
+        - name: ASSEMBLYAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: ASSEMBLYAI_API_KEY
+
+        # Logging
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        volumeMounts:
+        - name: work
+          mountPath: /mnt/pipeline/work
+        - name: models
+          mountPath: /mnt/pipeline/models
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "4"
+            nvidia.com/gpu: 1  # Request 1 GPU
+          limits:
+            memory: "16Gi"
+            cpu: "8"
+            nvidia.com/gpu: 1  # Limit to 1 GPU
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9091
+          initialDelaySeconds: 120  # Allow time for model loading
+          periodSeconds: 60
+          timeoutSeconds: 30
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9091
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 15
+
+      volumes:
+      - name: work
+        persistentVolumeClaim:
+          claimName: pipeline-work-pvc
+      - name: models
+        hostPath:
+          path: /mnt/pipeline/models  # Shared model cache
+          type: DirectoryOrCreate
+      - name: config
+        hostPath:
+          path: /mnt/pipeline/config
+          type: Directory
+
+---
+# Transcription Service (for metrics)
+apiVersion: v1
+kind: Service
+metadata:
+  name: transcription
+  namespace: stream-pipeline
+  labels:
+    app: transcription
+    component: worker
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9091
+    targetPort: 9091
+    protocol: TCP
+    name: metrics
+  selector:
+    app: transcription

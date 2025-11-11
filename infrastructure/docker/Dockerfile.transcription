@@ -1,0 +1,54 @@
+# Transcription Worker
+# Whisper large-v3 + Pyannote speaker diarization
+
+FROM stream-pipeline-base:latest
+
+LABEL description="Transcription worker with Whisper and Pyannote"
+
+# Install transcription-specific dependencies
+RUN pip install --no-cache-dir \
+    # Whisper (faster-whisper for speed)
+    faster-whisper==0.10.0 \
+    # PyTorch with CUDA support
+    torch==2.1.2 \
+    torchaudio==2.1.2 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+RUN pip install --no-cache-dir \
+    # Pyannote for speaker diarization
+    pyannote.audio==3.1.1 \
+    # Audio processing
+    librosa==0.10.1 \
+    soundfile==0.12.1 \
+    # Embedding generation
+    sentence-transformers==2.2.2 \
+    # AssemblyAI fallback
+    assemblyai==0.17.0 \
+    # Video to audio extraction
+    moviepy==1.0.3
+
+# Accept Pyannote terms
+# Note: Users must set HF_TOKEN environment variable with Hugging Face token
+# that has accepted the pyannote terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+
+# Download Whisper model (large-v3)
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8')"
+
+# Copy common utilities
+COPY pipeline/common /app/common
+
+# Copy transcription module
+COPY pipeline/transcription /app/transcription
+
+# Set working directory
+WORKDIR /app/transcription
+
+# Expose metrics port
+EXPOSE 9091
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:9091/health || exit 1
+
+# Run transcription worker
+CMD ["python3", "-m", "transcription.worker"]

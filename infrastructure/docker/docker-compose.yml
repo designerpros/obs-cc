@@ -1,0 +1,258 @@
+# Docker Compose for Local Development
+# Post-Stream Extraction Pipeline
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # INFRASTRUCTURE SERVICES
+  # ============================================================================
+
+  # PostgreSQL with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pipeline-postgres
+    environment:
+      POSTGRES_DB: stream_extraction
+      POSTGRES_USER: pipeline_worker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipeline_worker -d stream_extraction"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pipeline
+
+  # Redis for job queue
+  redis:
+    image: redis:7-alpine
+    container_name: pipeline-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pipeline
+
+  # ============================================================================
+  # PIPELINE WORKERS
+  # ============================================================================
+
+  # Ingestion worker (file watcher + webhook)
+  ingestion:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.ingestion
+    container_name: pipeline-ingestion
+    environment:
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: stream_extraction
+      POSTGRES_USER: pipeline_worker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+
+      # Ingestion config
+      WATCH_PATH: /mnt/obs-recordings/trigger
+      WEBHOOK_AUTH_TOKEN: ${WEBHOOK_AUTH_TOKEN:-dev_token}
+
+      # Logging
+      LOG_LEVEL: INFO
+    ports:
+      - "8080:8080"  # Webhook endpoint
+    volumes:
+      - ${RECORDINGS_PATH:-./test_data}:/mnt/obs-recordings:ro
+      - pipeline_work:/mnt/pipeline/work
+      - ../../pipeline/ingestion:/app/ingestion:ro
+      - ../../pipeline/common:/app/common:ro
+      - ../../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pipeline
+    restart: unless-stopped
+
+  # Transcription worker (Whisper + Pyannote)
+  transcription:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.transcription
+    container_name: pipeline-transcription
+    environment:
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: stream_extraction
+      POSTGRES_USER: pipeline_worker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+
+      # GPU
+      CUDA_VISIBLE_DEVICES: 0
+
+      # Hugging Face (for Pyannote)
+      HF_TOKEN: ${HF_TOKEN}
+
+      # AssemblyAI fallback
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+
+      # Logging
+      LOG_LEVEL: INFO
+    ports:
+      - "9091:9091"  # Metrics
+    volumes:
+      - pipeline_work:/mnt/pipeline/work
+      - pipeline_models:/mnt/pipeline/models
+      - ../../pipeline/transcription:/app/transcription:ro
+      - ../../pipeline/common:/app/common:ro
+      - ../../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - pipeline
+    restart: unless-stopped
+
+  # Analysis worker (LLM-based topic segmentation)
+  analysis:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.analysis
+    container_name: pipeline-analysis
+    environment:
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: stream_extraction
+      POSTGRES_USER: pipeline_worker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+
+      # LLM APIs
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GROK_API_KEY: ${GROK_API_KEY}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
+
+      # Logging
+      LOG_LEVEL: INFO
+    ports:
+      - "9092:9092"  # Metrics
+    volumes:
+      - pipeline_work:/mnt/pipeline/work
+      - ../../pipeline/analysis:/app/analysis:ro
+      - ../../pipeline/common:/app/common:ro
+      - ../../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pipeline
+    restart: unless-stopped
+
+  # ============================================================================
+  # MONITORING
+  # ============================================================================
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pipeline-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - pipeline
+    restart: unless-stopped
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pipeline-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - pipeline
+    restart: unless-stopped
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  pipeline:
+    driver: bridge
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+
+  redis_data:
+    driver: local
+
+  pipeline_work:
+    driver: local
+
+  pipeline_models:
+    driver: local
+
+  prometheus_data:
+    driver: local
+
+  grafana_data:
+    driver: local

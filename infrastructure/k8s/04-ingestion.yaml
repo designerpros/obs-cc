@@ -1,0 +1,155 @@
+# Ingestion Worker
+# File watcher and webhook for triggering new stream processing
+
+---
+# PersistentVolumeClaim for working directory
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pipeline-work-pvc
+  namespace: stream-pipeline
+spec:
+  accessModes:
+    - ReadWriteMany  # Shared across all workers
+  resources:
+    requests:
+      storage: 500Gi  # Large for temporary video files
+  storageClassName: local-path
+
+---
+# Ingestion Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion
+  namespace: stream-pipeline
+  labels:
+    app: ingestion
+    component: worker
+spec:
+  replicas: 1  # Single ingestion worker
+  selector:
+    matchLabels:
+      app: ingestion
+  template:
+    metadata:
+      labels:
+        app: ingestion
+        component: worker
+    spec:
+      containers:
+      - name: ingestion
+        image: stream-pipeline-ingestion:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: webhook
+        env:
+        # Database
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "stream_extraction"
+        - name: POSTGRES_USER
+          value: "pipeline_worker"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: POSTGRES_PASSWORD
+
+        # Redis
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: REDIS_PASSWORD
+
+        # Ingestion config
+        - name: WATCH_PATH
+          value: "/mnt/obs-recordings/trigger"
+        - name: WEBHOOK_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: WEBHOOK_AUTH_TOKEN
+
+        # Logging
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        volumeMounts:
+        - name: recordings
+          mountPath: /mnt/obs-recordings
+          readOnly: true
+        - name: work
+          mountPath: /mnt/pipeline/work
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+      volumes:
+      - name: recordings
+        hostPath:
+          path: /mnt/obs-recordings  # Adjust to your recordings path
+          type: Directory
+      - name: work
+        persistentVolumeClaim:
+          claimName: pipeline-work-pvc
+      - name: config
+        hostPath:
+          path: /mnt/pipeline/config  # Adjust to your config path
+          type: Directory
+
+---
+# Ingestion Service (for webhook access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion
+  namespace: stream-pipeline
+  labels:
+    app: ingestion
+    component: worker
+spec:
+  type: NodePort  # Or LoadBalancer for external access
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080  # External port for webhook
+    protocol: TCP
+    name: webhook
+  selector:
+    app: ingestion

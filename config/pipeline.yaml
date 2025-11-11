@@ -1,0 +1,1019 @@
+# Post-Stream Extraction Pipeline Configuration
+# Main configuration for all pipeline phases
+
+# ============================================================================
+# INFRASTRUCTURE
+# ============================================================================
+infrastructure:
+  mode: "k3s"  # 'local' for docker-compose, 'k3s' for kubernetes
+
+  # Tailscale network
+  tailscale:
+    enabled: true
+    nodes:
+      - name: "node1"
+        gpus: ["rtx2080s-1", "rtx2080s-2"]
+      - name: "node2"
+        gpus: ["rtx2080s-3", "rtx2080s-4"]
+      - name: "node3"
+        gpus: ["rtx3080", "rtx3090"]
+
+  # PostgreSQL
+  database:
+    host: "${POSTGRES_HOST:-localhost}"
+    port: 5432
+    database: "stream_extraction"
+    user: "${POSTGRES_USER:-pipeline_worker}"
+    password: "${POSTGRES_PASSWORD}"
+    pool_size: 20
+    max_overflow: 10
+
+  # Redis job queue
+  redis:
+    host: "${REDIS_HOST:-localhost}"
+    port: 6379
+    db: 0
+    password: "${REDIS_PASSWORD}"
+    max_connections: 50
+
+  # S3 archival
+  s3:
+    endpoint: "${S3_ENDPOINT}"
+    access_key: "${S3_ACCESS_KEY}"
+    secret_key: "${S3_SECRET_KEY}"
+    bucket_sources: "stream-sources"
+    bucket_extractions: "stream-extractions"
+    region: "us-east-1"
+
+    # Lifecycle policies
+    sources_storage_class: "DEEP_ARCHIVE"  # Perpetual storage
+    extractions_storage_class: "GLACIER"
+    extractions_delete_after_days: 1825  # 5 years
+
+# ============================================================================
+# PHASE 1: INGESTION
+# ============================================================================
+ingestion:
+  # Trigger modes
+  triggers:
+    file_watcher:
+      enabled: true
+      watch_path: "${WATCH_PATH:-/mnt/obs-recordings/trigger}"
+      poll_interval_seconds: 5
+
+    webhook:
+      enabled: true
+      host: "0.0.0.0"
+      port: 8080
+      endpoint: "/trigger"
+      auth_token: "${WEBHOOK_AUTH_TOKEN}"
+
+  # File validation
+  validation:
+    required_files:
+      - "cam_main_me.mp4"
+      - "live_mix.mp4"
+
+    optional_files:
+      - "cam_guest.mp4"
+      - "cam_overhead.mp4"
+      - "cam_screen.mp4"
+      - "cam_online_caller.mp4"
+
+    video_codec: "hevc"  # HEVC/H.265
+    min_duration_seconds: 600  # At least 10 minutes
+    max_size_gb: 100  # Per file
+
+  # Working directory
+  working_dir: "/mnt/pipeline/work"
+
+  # Copy strategy
+  copy_originals: true  # Always work on copies, leave originals untouched
+
+
+# ============================================================================
+# PHASE 1: TRANSCRIPTION
+# ============================================================================
+transcription:
+  # Primary engine
+  engine: "whisper-large-v3"
+
+  # Whisper configuration
+  whisper:
+    model: "large-v3"
+    device: "cuda"  # Auto-assigned by k8s GPU scheduler
+    compute_type: "float16"
+    language: "en"
+
+    # Performance tuning
+    batch_size: 16
+    beam_size: 5
+    best_of: 5
+    temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+    # VAD (Voice Activity Detection)
+    vad_filter: true
+    vad_threshold: 0.5
+
+  # Speaker diarization
+  diarization:
+    enabled: true
+    engine: "pyannote"
+    model: "pyannote/speaker-diarization-3.1"
+    min_speakers: 1
+    max_speakers: 4  # You, guest, caller, extra
+
+    # Speaker identification
+    known_speakers:
+      - name: "Host"
+        reference_audio: "${HOST_VOICE_SAMPLE}"
+      - name: "Guest"
+        reference_audio: null  # Auto-detect
+
+  # Fallback to AssemblyAI API
+  fallback:
+    enabled: true
+    api_key: "${ASSEMBLYAI_API_KEY}"
+    use_conditions:
+      - "whisper_failure"
+      - "processing_time_exceeds_600s"  # 10 min timeout
+
+  # Output
+  output:
+    format: "json"
+    include_word_timings: true
+    include_confidence_scores: true
+    generate_embeddings: true
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"  # 768 dim
+
+
+# ============================================================================
+# PHASE 1: ANALYSIS
+# ============================================================================
+analysis:
+  # Topic segmentation
+  topic_segmentation:
+    llm_provider: "anthropic"  # Primary
+    model: "claude-3-5-sonnet-20241022"
+    api_key: "${ANTHROPIC_API_KEY}"
+
+    # Segmentation strategy
+    min_topic_duration_seconds: 120  # At least 2 minutes per topic
+    max_topics_per_stream: 20
+
+    # Categories to classify
+    categories:
+      - "crypto"
+      - "finance"
+      - "economics"
+      - "politics"
+      - "policy"
+      - "monetary_policy"
+      - "business"
+      - "technology"
+      - "markets"
+      - "other"
+
+  # Coherence scoring
+  coherence:
+    # LLM consensus for quality
+    llm_providers:
+      - name: "grok"
+        api_key: "${GROK_API_KEY}"
+        endpoint: "https://api.x.ai/v1"
+        model: "grok-2-1212"
+        weight: 1.0
+
+      - name: "openai"
+        api_key: "${OPENAI_API_KEY}"
+        model: "gpt-4o"
+        weight: 1.0
+
+      - name: "anthropic"
+        api_key: "${ANTHROPIC_API_KEY}"
+        model: "claude-3-5-sonnet-20241022"
+        weight: 1.0
+
+      - name: "perplexity"
+        api_key: "${PERPLEXITY_API_KEY}"
+        endpoint: "https://api.perplexity.ai"
+        model: "llama-3.1-sonar-large-128k-online"
+        weight: 1.0
+
+    # Scoring criteria
+    criteria:
+      - coherence  # Does segment flow logically?
+      - standalone_viability  # Can it work independently?
+      - hook_strength  # Compelling opening?
+      - topic_relevance  # Clear topic focus?
+      - engagement_potential  # Interesting content?
+
+    # Approval threshold
+    consensus_threshold: 0.75  # 3/4 LLMs must approve
+    min_score_per_llm: 80  # Each LLM must score >= 80/100
+
+    # Retry on failure
+    regenerate_on_fail: true
+    max_regeneration_attempts: 2
+
+  # Energy/engagement detection
+  engagement:
+    audio_analysis:
+      detect_volume_peaks: true
+      detect_pace_changes: true  # Speaking speed variations
+      detect_emotion: true  # Tone analysis
+
+    visual_analysis:
+      detect_gestures: false  # Phase 3
+      detect_expressions: false  # Phase 3
+
+
+# ============================================================================
+# PHASE 2: EXTRACTION STRATEGY
+# ============================================================================
+extraction:
+  # Target quantities per stream
+  targets:
+    long_form:
+      count: 3
+      duration_min_seconds: 300  # 5 min
+      duration_max_seconds: 900  # 15 min
+      format: "landscape"  # 1920x1080
+
+    shorts:
+      count_min: 6
+      count_max: 8
+      duration_min_seconds: 30
+      duration_max_seconds: 90
+      format: "portrait"  # 1080x1920
+
+  # Selection strategy
+  selection:
+    prioritize_coherence: true
+    allow_topic_overlap: false  # Each topic used only once
+    require_distinct_timestamps: 60  # Shorts must be 60s apart
+
+  # Hook generation (XTTS2)
+  hooks:
+    enabled: true
+    duration_max_seconds: 5
+
+    # Text generation
+    variants_per_extraction: 3
+    llm_model: "claude-3-5-sonnet-20241022"
+    selection_criteria: "first_5s_retention_prediction"
+
+    # Audio synthesis (local XTTS2)
+    tts_engine: "coqui-xtts2"
+    voice_preset: "neutral_energetic"  # No voice cloning
+    device: "cuda"
+    language: "en"
+
+
+# ============================================================================
+# PHASE 2: CAMERA SWITCHING (Intelligent Multi-cam)
+# ============================================================================
+camera_switching:
+  # Hybrid analysis approach
+  strategy: "hybrid_c"  # Audio primary + visual validation
+
+  # Audio-based switching
+  audio:
+    engine: "diarization"  # Use pyannote diarization results
+    volume_threshold_db: -30  # Consider speaker active above this
+
+    # Rules
+    rules:
+      - condition: "speaker_is_host"
+        action: "switch_to_cam_main"
+        confidence_threshold: 0.7
+
+      - condition: "speaker_is_guest"
+        action: "switch_to_cam_guest"
+        confidence_threshold: 0.7
+
+      - condition: "multiple_speakers"
+        action: "switch_to_live_mix"  # Use user's live switching
+
+  # Visual validation
+  visual:
+    # Screen share detection
+    screen_detection:
+      enabled: true
+      engine: "opencv"
+      detect_ui_patterns: true  # Taskbar, windows, cursors
+      min_confidence: 0.75
+      action: "switch_to_cam_screen"
+
+    # Overhead writing detection
+    writing_detection:
+      enabled: true
+      engine: "yolo"
+      model: "yolov8n"  # Nano for speed
+      detect_objects: ["hand", "pen", "paper"]
+      training_data: "/mnt/pipeline/models/overhead_training"
+      min_confidence: 0.70
+      action: "switch_to_cam_overhead"
+
+    # Lip sync validation (ensure speaker matches audio)
+    lip_sync:
+      enabled: true
+      engine: "syncnet"
+      validate_speaker_match: true
+
+  # Reference learning (from live_mix.mp4)
+  reference_learning:
+    enabled: true
+    model: "ml_preference_baseline"
+    training_data: "live_mix_switches"
+    # Learn: "When topic X happens, user switches to camera Y"
+    features: ["topic_category", "speaker_id", "time_of_stream"]
+
+  # Transition smoothing
+  transitions:
+    min_shot_duration_seconds: 3  # Don't switch too quickly
+    crossfade_duration_seconds: 0.3
+
+
+# ============================================================================
+# PHASE 2: B-ROLL GENERATION
+# ============================================================================
+broll:
+  # Generation engine
+  engine: "stable-diffusion-xl"
+
+  # ComfyUI configuration
+  comfyui:
+    api_endpoint: "http://localhost:8188"
+    workflow_template: "/mnt/pipeline/comfyui/workflows/broll_generation.json"
+
+  # SDXL configuration
+  sdxl:
+    model: "stabilityai/stable-diffusion-xl-base-1.0"
+    device: "cuda"  # 3090 preferred for generation
+    steps: 30
+    guidance_scale: 7.5
+    scheduler: "DPMSolverMultistep"
+
+    # Quality
+    width: 1920
+    height: 1080
+    negative_prompt: "blurry, low quality, distorted, watermark, text, signature"
+
+  # LoRA styles
+  loras:
+    - name: "ghibli"
+      path: "/mnt/pipeline/models/loras/ghibli_style_xl.safetensors"
+      weight: 0.8
+
+    - name: "cyberpunk"
+      path: "/mnt/pipeline/models/loras/cyberpunk_xl.safetensors"
+      weight: 0.8
+
+    - name: "minimalist"
+      path: "/mnt/pipeline/models/loras/minimalist_abstract.safetensors"
+      weight: 0.7
+
+    - name: "neon_finance"
+      path: "/mnt/pipeline/models/loras/financial_charts_neon.safetensors"
+      weight: 0.75
+
+    - name: "vintage_policy"
+      path: "/mnt/pipeline/models/loras/vintage_newspaper.safetensors"
+      weight: 0.7
+
+  # Style assignment
+  style_assignment:
+    strategy: "ai_topic_mood_match"
+    llm_model: "claude-3-5-haiku-20241022"
+
+    # Topic → Style mapping examples
+    mappings:
+      crypto_volatility: "cyberpunk"
+      monetary_policy: "vintage_policy"
+      market_analysis: "neon_finance"
+      tech_innovation: "minimalist"
+      general: "ghibli"
+
+  # Insertion rules
+  insertion:
+    trigger_duration_seconds: 7  # Insert B-roll if talking head > 7s
+    panel_duration_seconds: 4
+    transition_type: "random"  # 'pip' or 'replace'
+
+    # PIP (Picture-in-Picture) settings
+    pip:
+      speaker_size_percent: 20  # Speaker shown as 20% circle/box
+      position: ["bottom-right", "bottom-left", "top-right"]
+      transition_duration: 0.5  # Crossfade 0.5s
+
+    # Full replace
+    replace:
+      transition_duration: 0.5
+
+  # Library & caching
+  library:
+    enabled: true
+    db_table: "broll_library"
+
+    # Semantic search for reuse
+    similarity_threshold: 0.85  # Reuse if prompt embedding > 85% similar
+    max_reuse_per_stream: 3  # Limit repetition within one stream
+
+    # Long-term library growth
+    auto_add_to_library: true
+    quality_threshold: 75  # Only cache B-roll scored >= 75/100
+
+
+# ============================================================================
+# PHASE 2: VIRALITY ENGINE
+# ============================================================================
+virality:
+  enabled: true
+
+  # XTTS2 hook generation
+  xtts2_hooks:
+    enabled: true
+    max_duration_seconds: 5
+
+    # Generation
+    variants: 3  # Generate 3 hook options
+    llm_model: "claude-3-5-sonnet-20241022"
+    selection_metric: "first_5s_retention_prediction"
+
+    # TTS (Coqui XTTS2)
+    tts:
+      model_path: "/mnt/pipeline/models/xtts2"
+      device: "cuda"
+      voice: "neutral_energetic"
+      language: "en"
+      temperature: 0.7
+
+    # Approval gate
+    llm_approval_threshold: 70  # Must score >= 70/100 retention prediction
+
+  # Thumbnail A/B testing
+  thumbnail_ab_testing:
+    enabled: true
+    variants: 2  # Generate 2 thumbnail options
+
+    # Generation strategy
+    strategy: "hybrid"  # AI-gen base + extracted frames + text overlay
+
+    # AI base generation
+    ai_generation:
+      engine: "sdxl"
+      style_match_video: true  # Match B-roll style
+
+    # Extracted frames
+    frame_extraction:
+      multi_angle: true  # Use multiple camera angles
+      detect_reactions: true  # Look for expressive moments
+      positions: ["host_face", "guest_reaction", "screen_share"]
+
+    # Text overlay
+    text_overlay:
+      font_path: "/mnt/pipeline/fonts/impact.ttf"
+      platform_specific: true
+      styles:
+        youtube: "bold_claims"  # "The Fed's $2T Lie"
+        tiktok: "emojis_heavy"  # "💰 BREAKING: Fed Exposed 🚨"
+        linkedin: "professional"  # "Federal Reserve Policy Analysis"
+
+    # A/B swap logic
+    swap_after_hours: 24
+    swap_threshold_ctr_improvement: 20  # Swap if #2 projected 20%+ better
+    platforms: ["youtube", "x", "linkedin"]  # Only platforms with easy swap
+
+  # First-comment funnel
+  first_comment:
+    enabled: true
+    template: "Full breakdown in live stream [timestamp_link] 👇"
+
+    # Platform support
+    platforms_pinned: ["youtube", "instagram", "facebook", "linkedin"]
+    platforms_text_overlay: ["tiktok", "x"]
+
+    # Timing strategy
+    post_timing: "staggered"  # Shorts first, longs 24h later
+
+  # Trend-jacking
+  trend_jacking:
+    enabled: true
+
+    # Use existing stream plugin
+    realtime_headlines: true
+    headline_source: "claude_haiku_7min_match"  # From existing plugin
+
+    # Backlog trend scraping
+    daily_scrape:
+      enabled: true
+      time: "04:00"  # 4 AM daily
+      llm: "grok"
+      sources: ["twitter_trending", "google_trends", "reddit_rising"]
+
+    # Extraction prioritization
+    flag_breaking_news: true
+    extraction_label: "BREAKING"
+    overlay_badge: "HOT TAKE"
+
+    # Targets
+    breaking_extractions_per_stream: 2  # Max 2 "breaking" clips
+
+  # Long-form retention boosters
+  long_form_boosters:
+    # Emotional chapters
+    chapters:
+      enabled: true
+      auto_generate: true
+      style: "emotional"  # "The Crypto Crash They Hid"
+      llm_model: "claude-3-5-haiku-20241022"
+
+    # Timed popups (quotes/stats)
+    popups:
+      enabled: true
+      trigger: "engagement_peaks"  # Show at high-energy moments
+      types: ["quote", "stat", "fact_check"]
+      max_per_video: 5
+
+    # End-screen carousel
+    end_screen:
+      enabled: true
+      show_related_clips: 3  # Top 3 related extractions
+      show_full_stream_cta: true
+      cta_text: "Watch full stream with timestamps"
+
+  # Performance feedback loop
+  feedback_loop:
+    enabled: true
+    schedule: "weekly"  # Run every Sunday
+
+    # Data sources
+    analytics_source: "late_api"
+    metrics: ["views", "ctr", "watch_time", "retention"]
+
+    # LLM retraining
+    retrain_models: true
+    retrain_targets:
+      - "hook_generation"
+      - "thumbnail_style"
+      - "broll_insertion_timing"
+
+    # Quarterly evolution
+    quarterly_review: true
+    archive_learnings: "/mnt/pipeline/learnings"
+
+
+# ============================================================================
+# PHASE 3: VIDEO RENDERING
+# ============================================================================
+rendering:
+  # FFmpeg configuration
+  ffmpeg:
+    threads: 8
+    hardware_acceleration: "cuda"  # Use NVENC on RTX GPUs
+
+    # Video encoding
+    video_codec: "h264_nvenc"  # NVIDIA hardware encoder
+    preset: "slow"  # Quality over speed
+    crf: 18  # High quality (lower = better, 0-51)
+    pixel_format: "yuv420p"
+
+    # Audio encoding
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    audio_sample_rate: 48000
+
+  # Output formats
+  outputs:
+    landscape:
+      resolution: "1920x1080"
+      fps: 30
+      aspect_ratio: "16:9"
+
+    portrait:
+      resolution: "1080x1920"
+      fps: 30
+      aspect_ratio: "9:16"
+
+  # Audio processing
+  audio:
+    # Normalization
+    normalize: true
+    target_loudness_lufs: -1.0
+
+    # Background music
+    bgm:
+      enabled: true
+      library_path: "/mnt/pipeline/audio/bgm"
+      volume_ducking_db: -20  # Duck BGM to -20dB under speech
+      style_match: true  # Match B-roll style (e.g., cyberpunk → synth)
+
+      # EQ & polish
+      eq:
+        high_pass_hz: 80
+        warmth_boost: true
+
+      reverb:
+        enabled: true
+        preset: "subtle_studio"
+
+  # Branding
+  branding:
+    # Logo overlay
+    logo:
+      enabled: true
+      path: "/mnt/pipeline/assets/logo.png"
+      position: "top-right"
+      opacity: 0.10
+      size_percent: 5
+
+    # Outro CTA slate
+    outro:
+      enabled: true
+      duration_seconds: 5
+      template: "/mnt/pipeline/assets/outro_template.mp4"
+      text: "Watch full stream on [channel_link]"
+      clickable: true  # Platform-specific
+
+  # Quality control
+  quality_check:
+    enabled: true
+    checks:
+      - "no_audio_dropouts"
+      - "no_visual_artifacts"
+      - "proper_resolution"
+      - "duration_matches_expected"
+
+    fail_on_error: true
+
+
+# ============================================================================
+# PHASE 3: METADATA GENERATION
+# ============================================================================
+metadata:
+  # Platform-specific generation
+  per_platform_unique: true  # Each platform gets unique metadata
+
+  # LLM consensus approval
+  llm_approval:
+    enabled: true
+    providers:
+      - "grok"
+      - "openai"
+      - "anthropic"
+      - "perplexity"
+
+    criteria:
+      - "clickability"
+      - "accuracy"
+      - "seo_optimization"
+      - "platform_appropriateness"
+
+    threshold: 0.75  # 3/4 LLMs must approve
+    min_score: 80
+
+    regenerate_on_fail: true
+    max_attempts: 3
+
+  # Title generation
+  titles:
+    llm_model: "claude-3-5-sonnet-20241022"
+
+    platform_styles:
+      youtube: "seo_keyword_rich"  # "How The Fed's $2T Policy Will Impact Crypto Markets"
+      tiktok: "hook_emoji"  # "💰 You Won't Believe What The Fed Just Did..."
+      x: "concise_bold"  # "Fed drops $2T bombshell"
+      linkedin: "professional_insight"  # "Federal Reserve Policy Analysis: Market Implications"
+      instagram: "casual_engaging"  # "This Fed decision changes everything 👀"
+
+    max_length_per_platform: true  # Respect platform limits
+
+  # Description generation
+  descriptions:
+    llm_model: "claude-3-5-sonnet-20241022"
+
+    components:
+      - "hook_opening"
+      - "summary"
+      - "key_points"
+      - "timestamps"  # For long-form
+      - "cta"
+      - "hashtags"
+      - "links"
+
+    platform_specific: true
+
+  # Thumbnail generation
+  thumbnails:
+    # See virality.thumbnail_ab_testing for generation
+    # This section handles post-generation processing
+
+    # Text rendering
+    text:
+      font_path: "/mnt/pipeline/fonts"
+      platform_specific: true
+      max_lines: 2
+      contrast_boost: true  # Ensure text is readable
+
+    # Face detection & framing
+    face_detection:
+      enabled: true
+      model: "retinaface"
+      ensure_faces_visible: true
+      optimal_face_size_percent: 40
+
+  # Tags & hashtags
+  tags:
+    auto_generate: true
+    llm_model: "claude-3-5-haiku-20241022"
+
+    # Per platform
+    max_tags:
+      youtube: 15
+      instagram: 30
+      tiktok: 5
+      linkedin: 10
+
+    # Strategy
+    mix_broad_and_niche: true
+    include_trending: true
+
+
+# ============================================================================
+# PHASE 3: POSTING VIA LATE API
+# ============================================================================
+posting:
+  # LATE API configuration
+  late:
+    api_endpoint: "${LATE_API_ENDPOINT}"
+    api_key: "${LATE_API_KEY}"
+    timeout_seconds: 300
+
+    # Retry logic
+    retry_attempts: 3
+    retry_backoff_seconds: 10
+
+  # Platform credentials (managed by LATE)
+  # Platforms: youtube, tiktok, instagram, facebook, x, linkedin,
+  #            pinterest, snapchat, twitch, reddit
+
+  platforms:
+    enabled:
+      - "youtube"
+      - "x"
+      - "tiktok"
+      - "instagram"
+      - "linkedin"
+      - "facebook"
+      - "reddit"
+      - "pinterest"
+      - "snapchat"
+      - "twitch"
+
+    # Priority order for posting
+    priority:
+      shorts:
+        - "tiktok"
+        - "instagram"
+        - "youtube"
+        - "x"
+        - "snapchat"
+        - "facebook"
+        - "pinterest"
+        - "linkedin"
+        - "reddit"
+        - "twitch"
+
+      longs:
+        - "youtube"
+        - "x"
+        - "linkedin"
+        - "facebook"
+        - "reddit"
+        - "twitch"
+        - "tiktok"
+        - "instagram"
+        - "pinterest"
+        - "snapchat"
+
+  # Scheduling strategy
+  scheduling:
+    strategy: "staggered_rules_engine"
+
+    # Immediate posting (upon approval)
+    immediate: true
+
+    # Spread over time
+    spread_duration_days: 14  # 1-2 weeks
+
+    # Platform-specific rules (from platform_rules table)
+    respect_platform_limits: true
+    respect_optimal_hours: true
+    avoid_night_posts: true
+
+    # Sequencing
+    shorts_first: true  # Post shorts before longs
+    longs_delay_hours: 24  # Post longs 24h after shorts
+
+    # Concurrency
+    max_concurrent_uploads: 5  # Max 5 simultaneous uploads
+
+  # Analytics tracking
+  analytics:
+    enabled: true
+
+    # Polling schedule
+    poll_interval_hours: 24  # Check analytics daily
+
+    # Metrics to track
+    metrics:
+      - "views"
+      - "likes"
+      - "comments"
+      - "shares"
+      - "ctr"
+      - "avg_watch_time"
+      - "retention"
+
+    # Store in database
+    store_in_db: true
+    table: "platform_posts"
+
+
+# ============================================================================
+# PHASE 3: S3 ARCHIVAL
+# ============================================================================
+archival:
+  # Source footage (perpetual)
+  sources:
+    auto_upload: true
+    upload_after: "posting_complete"  # After all extractions posted
+
+    storage_class: "DEEP_ARCHIVE"
+    lifecycle_policy: "perpetual"
+
+    # Prefix structure: sources/{year}/{month}/{stream_id}/
+    prefix_template: "sources/{year}/{month}/{stream_id}/"
+
+  # Extracted videos (5 year retention)
+  extractions:
+    auto_upload: true
+    upload_after: "posted"
+
+    storage_class: "GLACIER"
+    lifecycle_policy:
+      delete_after_days: 1825  # 5 years
+
+    # Prefix structure: extractions/{year}/{month}/{stream_id}/{extraction_id}/
+    prefix_template: "extractions/{year}/{month}/{stream_id}/{extraction_id}/"
+
+  # Metadata & transcripts (searchable)
+  metadata:
+    auto_upload: true
+    upload_after: "analysis_complete"
+
+    storage_class: "STANDARD_IA"  # Infrequent Access
+    lifecycle_policy: "perpetual"
+
+    # Keep local copy for search
+    keep_local_copy: true
+    local_db: "postgresql"  # With pgvector for search
+
+    # Prefix: metadata/{year}/{month}/
+    prefix_template: "metadata/{year}/{month}/"
+
+  # Cleanup
+  local_cleanup:
+    enabled: true
+    cleanup_after: "s3_upload_verified"
+
+    # What to keep locally
+    keep_local:
+      - "metadata"  # Always keep for search
+      - "thumbnails"  # Small files
+
+    # What to delete locally
+    delete_local:
+      - "source_videos"
+      - "extraction_videos"
+      - "intermediate_files"
+      - "broll_cache"  # Unless in library
+
+
+# ============================================================================
+# MONITORING & NOTIFICATIONS
+# ============================================================================
+monitoring:
+  # Telegram bot
+  telegram:
+    enabled: true
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+
+    # Notification types
+    notify_on:
+      - "stream_ingested"
+      - "transcription_complete"
+      - "extractions_approved"
+      - "rendering_complete"
+      - "posting_complete"
+      - "errors"
+      - "analytics_update"
+
+    # Inline buttons
+    inline_buttons: true  # Allow rare manual interventions
+
+  # Discord bot (mirror)
+  discord:
+    enabled: true
+    webhook_url: "${DISCORD_WEBHOOK_URL}"
+
+    # Same notifications as Telegram
+    notify_on:
+      - "stream_ingested"
+      - "transcription_complete"
+      - "extractions_approved"
+      - "rendering_complete"
+      - "posting_complete"
+      - "errors"
+      - "analytics_update"
+
+  # Prometheus metrics (for Grafana dashboards)
+  prometheus:
+    enabled: true
+    port: 9090
+
+    metrics:
+      - "streams_processed_total"
+      - "extractions_generated_total"
+      - "posts_published_total"
+      - "processing_duration_seconds"
+      - "llm_api_calls_total"
+      - "gpu_utilization_percent"
+      - "queue_depth"
+
+  # Health checks
+  healthcheck:
+    enabled: true
+    endpoint: "/health"
+    interval_seconds: 30
+
+
+# ============================================================================
+# DEVELOPMENT & TESTING
+# ============================================================================
+development:
+  # Mock mode (no actual API calls)
+  mock_mode: false
+
+  # Debug logging
+  debug: true
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+  # Test data
+  test_streams_path: "/mnt/pipeline/test_data"
+
+  # Skip expensive operations
+  skip_rendering: false
+  skip_posting: false
+  skip_llm_consensus: false  # Dangerous! Always validate in production
+
+  # Local-only processing (no cloud APIs)
+  local_only: false
+
+
+# ============================================================================
+# COST OPTIMIZATION
+# ============================================================================
+cost_optimization:
+  # LLM usage
+  llm:
+    prefer_local: true  # Use local models when possible
+    cache_responses: true
+    cache_ttl_hours: 168  # 1 week
+
+    # Tiered usage
+    use_haiku_for_simple_tasks: true
+    use_sonnet_for_analysis: true
+    avoid_opus_unless_critical: true
+
+  # GPU scheduling
+  gpu:
+    prefer_smaller_models: false  # Quality over cost
+    batch_similar_jobs: true  # Batch transcription/rendering
+
+    # Auto-scaling
+    scale_down_idle_minutes: 30
+
+  # API quotas
+  quotas:
+    assemblyai_max_hours_per_month: 1000
+    openai_max_tokens_per_day: 10000000
+    anthropic_max_tokens_per_day: 10000000
+
+  # S3 optimization
+  s3:
+    use_multipart_upload: true
+    compress_metadata: true
+    intelligent_tiering: false  # We manage manually

@@ -1,0 +1,8 @@
+# Kubernetes Namespace for Pipeline
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stream-pipeline
+  labels:
+    name: stream-pipeline
+    app: post-stream-extraction
