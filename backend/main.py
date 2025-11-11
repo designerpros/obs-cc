@@ -17,6 +17,20 @@ from .transcription import TranscriptionManager
 from .news_fetcher import NewsFetcher
 from .context_matcher import ContextMatcher
 
+# Optional audio capture modules
+try:
+    from .audio_capture import SystemAudioCapture
+    SYSTEM_AUDIO_AVAILABLE = True
+except ImportError:
+    SYSTEM_AUDIO_AVAILABLE = False
+    logger.warning("System audio capture not available (sounddevice not installed)")
+
+try:
+    from .audio_file_monitor import AudioFileMonitor
+    FILE_MONITOR_AVAILABLE = True
+except ImportError:
+    FILE_MONITOR_AVAILABLE = False
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -52,13 +66,47 @@ context_matcher = ContextMatcher(config)
 current_headlines: List[Dict] = []
 last_update: Optional[datetime] = None
 
+# Audio capture (based on config)
+audio_capture = None
+audio_capture_mode = config.get('audio_capture', {}).get('mode', 'none')
+
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
+    global audio_capture
+
     logger.info("Starting OBS News Ticker Backend...")
     await news_fetcher.start()
     await transcription_manager.start()
+
+    # Initialize audio capture based on mode
+    if audio_capture_mode == 'system':
+        if SYSTEM_AUDIO_AVAILABLE:
+            logger.info("Initializing system audio capture...")
+            audio_capture = SystemAudioCapture(config, transcription_manager)
+            await audio_capture.start()
+        else:
+            logger.error("System audio mode selected but sounddevice not installed!")
+            logger.error("Run: pip install sounddevice")
+
+    elif audio_capture_mode == 'file':
+        if FILE_MONITOR_AVAILABLE:
+            logger.info("Initializing file-based audio monitor...")
+            audio_capture = AudioFileMonitor(config, transcription_manager)
+            await audio_capture.start()
+        else:
+            logger.error("File monitor mode selected but module not available!")
+
+    elif audio_capture_mode == 'websocket':
+        logger.info("Audio capture via WebSocket (OBS must connect to /ws/audio)")
+
+    elif audio_capture_mode == 'none':
+        logger.warning("⚠️  Audio capture disabled - context matching will use generic news!")
+        logger.warning("⚠️  Set audio_capture.mode in config.json to enable transcription")
+
+    else:
+        logger.error(f"Unknown audio_capture mode: {audio_capture_mode}")
 
     # Start background tasks
     asyncio.create_task(periodic_news_update())
@@ -69,6 +117,8 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down...")
+    if audio_capture:
+        await audio_capture.stop()
     await transcription_manager.stop()
     await news_fetcher.stop()
 

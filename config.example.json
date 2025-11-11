@@ -5,6 +5,14 @@
     "newsapi_key": "YOUR_NEWSAPI_ORG_KEY_HERE (optional)",
     "gnews_key": "YOUR_GNEWS_API_KEY_HERE (optional)"
   },
+  "audio_capture": {
+    "mode": "system",
+    "device": null,
+    "sample_rate": 48000,
+    "channels": 2,
+    "chunk_duration": 0.1,
+    "audio_file_path": "obs_audio.wav"
+  },
   "backend": {
     "host": "localhost",
     "port": 8765

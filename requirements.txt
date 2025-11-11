@@ -9,3 +9,7 @@ feedparser==6.0.10
 pydantic==2.5.2
 python-dotenv==1.0.0
 numpy==1.26.2
+
+# Audio capture (optional - install based on your needs)
+# For system audio capture:
+sounddevice==0.4.6  # Recommended for real-time audio
