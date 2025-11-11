@@ -1,0 +1,31 @@
+{
+  "assemblyai_api_key": "YOUR_ASSEMBLYAI_API_KEY_HERE",
+  "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY_HERE",
+  "news_apis": {
+    "newsapi_key": "YOUR_NEWSAPI_ORG_KEY_HERE (optional)",
+    "gnews_key": "YOUR_GNEWS_API_KEY_HERE (optional)"
+  },
+  "backend": {
+    "host": "localhost",
+    "port": 8765
+  },
+  "transcription": {
+    "buffer_duration_seconds": 300,
+    "language": "en"
+  },
+  "news": {
+    "refresh_interval_minutes": 10,
+    "max_headlines": 50,
+    "categories": ["general", "technology", "business", "science"]
+  },
+  "matching": {
+    "model": "claude-3-5-haiku-20241022",
+    "top_results": 4
+  },
+  "ticker": {
+    "width": 3840,
+    "height": 100,
+    "scroll_speed": 2.0,
+    "font_size": 48
+  }
+}
