@@ -466,6 +466,16 @@ CREATE TABLE feedback_adaptations (
 CREATE INDEX idx_feedback_created ON feedback_adaptations(created_at DESC);
 
 
+-- Auto Tuning History: Parameter optimization over time
+CREATE TABLE auto_tuning_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    tuning_results JSONB NOT NULL -- Complete tuning cycle results with adjustments
+);
+
+CREATE INDEX idx_tuning_created ON auto_tuning_history(created_at DESC);
+
+
 -- ============================================================================
 -- VIEWS
 -- ============================================================================
