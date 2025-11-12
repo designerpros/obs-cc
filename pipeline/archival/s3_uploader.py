@@ -64,80 +64,109 @@ class S3Uploader:
 
     async def _ensure_buckets(self):
         """Ensure buckets exist with correct lifecycle policies"""
+        from botocore.exceptions import ClientError
         loop = asyncio.get_event_loop()
 
         # Check/create sources bucket
         try:
-            await loop.run_in_executor(None, self.s3_client.head_bucket, {'Bucket': self.bucket_sources})
+            await loop.run_in_executor(
+                None,
+                lambda: self.s3_client.head_bucket(Bucket=self.bucket_sources)
+            )
             logger.info(f"Sources bucket exists: {self.bucket_sources}")
-        except:
-            logger.info(f"Creating sources bucket: {self.bucket_sources}")
-            await loop.run_in_executor(
-                None,
-                self.s3_client.create_bucket,
-                {
-                    'Bucket': self.bucket_sources,
-                    'CreateBucketConfiguration': {'LocationConstraint': self.region},
-                }
-            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.info(f"Creating sources bucket: {self.bucket_sources}")
 
-            # Set lifecycle policy for Deep Glacier
-            await loop.run_in_executor(
-                None,
-                self.s3_client.put_bucket_lifecycle_configuration,
-                {
-                    'Bucket': self.bucket_sources,
-                    'LifecycleConfiguration': {
-                        'Rules': [{
-                            'Id': 'deep-glacier-transition',
-                            'Status': 'Enabled',
-                            'Prefix': '',
-                            'Transitions': [{
-                                'Days': 0,
-                                'StorageClass': 'DEEP_ARCHIVE',
-                            }],
-                        }]
+                # Prepare bucket creation arguments
+                create_bucket_args = {'Bucket': self.bucket_sources}
+                # AWS quirk: us-east-1 doesn't accept LocationConstraint
+                if self.region != 'us-east-1':
+                    create_bucket_args['CreateBucketConfiguration'] = {
+                        'LocationConstraint': self.region
                     }
-                }
-            )
+
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.s3_client.create_bucket(**create_bucket_args)
+                )
+
+                # Set lifecycle policy for Deep Glacier
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.s3_client.put_bucket_lifecycle_configuration(
+                        Bucket=self.bucket_sources,
+                        LifecycleConfiguration={
+                            'Rules': [{
+                                'Id': 'deep-glacier-transition',
+                                'Status': 'Enabled',
+                                'Prefix': '',
+                                'Transitions': [{
+                                    'Days': 0,
+                                    'StorageClass': 'DEEP_ARCHIVE',
+                                }],
+                            }]
+                        }
+                    )
+                )
+            else:
+                logger.error(f"Error checking sources bucket: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error with sources bucket: {e}")
+            raise
 
         # Check/create extractions bucket
         try:
-            await loop.run_in_executor(None, self.s3_client.head_bucket, {'Bucket': self.bucket_extractions})
+            await loop.run_in_executor(
+                None,
+                lambda: self.s3_client.head_bucket(Bucket=self.bucket_extractions)
+            )
             logger.info(f"Extractions bucket exists: {self.bucket_extractions}")
-        except:
-            logger.info(f"Creating extractions bucket: {self.bucket_extractions}")
-            await loop.run_in_executor(
-                None,
-                self.s3_client.create_bucket,
-                {
-                    'Bucket': self.bucket_extractions,
-                    'CreateBucketConfiguration': {'LocationConstraint': self.region},
-                }
-            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.info(f"Creating extractions bucket: {self.bucket_extractions}")
 
-            # Set lifecycle policy for Glacier + 5 year deletion
-            await loop.run_in_executor(
-                None,
-                self.s3_client.put_bucket_lifecycle_configuration,
-                {
-                    'Bucket': self.bucket_extractions,
-                    'LifecycleConfiguration': {
-                        'Rules': [{
-                            'Id': 'glacier-5year-delete',
-                            'Status': 'Enabled',
-                            'Prefix': '',
-                            'Transitions': [{
-                                'Days': 0,
-                                'StorageClass': 'GLACIER',
-                            }],
-                            'Expiration': {
-                                'Days': 1825,  # 5 years
-                            }
-                        }]
+                # Prepare bucket creation arguments
+                create_bucket_args = {'Bucket': self.bucket_extractions}
+                # AWS quirk: us-east-1 doesn't accept LocationConstraint
+                if self.region != 'us-east-1':
+                    create_bucket_args['CreateBucketConfiguration'] = {
+                        'LocationConstraint': self.region
                     }
-                }
-            )
+
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.s3_client.create_bucket(**create_bucket_args)
+                )
+
+                # Set lifecycle policy for Glacier + 5 year deletion
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.s3_client.put_bucket_lifecycle_configuration(
+                        Bucket=self.bucket_extractions,
+                        LifecycleConfiguration={
+                            'Rules': [{
+                                'Id': 'glacier-5year-delete',
+                                'Status': 'Enabled',
+                                'Prefix': '',
+                                'Transitions': [{
+                                    'Days': 0,
+                                    'StorageClass': 'GLACIER',
+                                }],
+                                'Expiration': {
+                                    'Days': 1825,  # 5 years
+                                }
+                            }]
+                        }
+                    )
+                )
+            else:
+                logger.error(f"Error checking extractions bucket: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error with extractions bucket: {e}")
+            raise
 
     async def upload_sources(
         self,
@@ -272,14 +301,15 @@ class S3Uploader:
         # Upload in thread pool (blocking I/O)
         await loop.run_in_executor(
             None,
-            self.s3_client.upload_file,
-            str(file_path),
-            bucket,
-            key,
-            {
-                'StorageClass': storage_class,
-                'ServerSideEncryption': 'AES256',
-            }
+            lambda: self.s3_client.upload_file(
+                str(file_path),
+                bucket,
+                key,
+                ExtraArgs={
+                    'StorageClass': storage_class,
+                    'ServerSideEncryption': 'AES256',
+                }
+            )
         )
 
         logger.info(f"Uploaded to s3://{bucket}/{key} ({storage_class})")
@@ -299,19 +329,24 @@ class S3Uploader:
         Returns:
             True if file exists
         """
+        from botocore.exceptions import ClientError
         loop = asyncio.get_event_loop()
 
         try:
             await loop.run_in_executor(
                 None,
-                self.s3_client.head_object,
-                {
-                    'Bucket': bucket,
-                    'Key': key,
-                }
+                lambda: self.s3_client.head_object(Bucket=bucket, Key=key)
             )
             return True
-        except:
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.debug(f"Object not found: s3://{bucket}/{key}")
+                return False
+            else:
+                logger.error(f"Error verifying upload: {e}")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error verifying upload: {e}")
             return False
 
 

@@ -179,8 +179,12 @@ class JobQueue:
             }
         )
 
-        # Parse payload
-        job_data["payload"] = json.loads(job_data["payload"]) if job_data.get("payload") else {}
+        # Parse payload with error handling
+        try:
+            job_data["payload"] = json.loads(job_data["payload"]) if job_data.get("payload") else {}
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"Failed to parse job payload for {job_id}: {e}")
+            job_data["payload"] = {}
 
         logger.info(f"Dequeued job {job_id} (type: {job_type.value}, worker: {worker_id})")
         return job_data
@@ -218,7 +222,7 @@ class JobQueue:
             max_retries: Maximum retry count
         """
         job_data = await self.redis.hgetall(f"job:{job_id}")
-        retry_count = int(job_data.get("retry_count", 0))
+        retry_count = int(job_data.get("retry_count") or 0)  # Handle None gracefully
 
         if retry and retry_count < max_retries:
             # Retry
@@ -233,9 +237,10 @@ class JobQueue:
                 }
             )
 
-            # Re-enqueue with lower priority
+            # Re-enqueue with lower priority (with minimum bound)
             job_type = job_data["job_type"]
-            priority = int(job_data.get("priority", 0)) - 10  # Lower priority on retry
+            current_priority = int(job_data.get("priority") or 0)
+            priority = max(current_priority - 10, -100)  # Minimum priority bound
             queue_key = f"queue:{job_type}"
             await self.redis.zadd(queue_key, {str(job_id): -priority})
 
@@ -256,8 +261,13 @@ class JobQueue:
         """Get job data"""
         job_data = await self.redis.hgetall(f"job:{job_id}")
         if job_data:
-            job_data["payload"] = json.loads(job_data.get("payload", "{}"))
-            job_data["result"] = json.loads(job_data.get("result", "{}"))
+            try:
+                job_data["payload"] = json.loads(job_data.get("payload", "{}"))
+                job_data["result"] = json.loads(job_data.get("result", "{}"))
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Failed to parse job data for {job_id}: {e}")
+                job_data["payload"] = {}
+                job_data["result"] = {}
         return job_data if job_data else None
 
     async def get_stream_jobs(self, stream_id: UUID) -> List[Dict[str, Any]]:
@@ -319,7 +329,13 @@ class JobQueue:
     async def get_cache(self, key: str) -> Optional[Any]:
         """Get cached value"""
         value = await self.redis.get(key)
-        return json.loads(value) if value else None
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"Failed to parse cached value for key {key}: {e}")
+            return None
 
     async def delete_cache(self, key: str):
         """Delete cached value"""

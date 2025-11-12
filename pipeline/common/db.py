@@ -480,11 +480,15 @@ async def get_pending_jobs(job_type: Optional[str] = None, limit: int = 10) -> L
     """Get pending jobs"""
     async with get_db() as db:
         query = "SELECT * FROM jobs WHERE status = 'pending'"
+        params = {"limit": limit}
+
         if job_type:
-            query += f" AND job_type = '{job_type}'"
+            query += " AND job_type = :job_type"
+            params["job_type"] = job_type
+
         query += " ORDER BY priority DESC, created_at ASC LIMIT :limit"
 
-        result = await db.execute(query, {"limit": limit})
+        result = await db.execute(text(query), params)
         return result.fetchall()
 
 
