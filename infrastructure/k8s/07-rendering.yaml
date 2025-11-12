@@ -1,0 +1,168 @@
+# Rendering Worker with GPU Support
+# Video editing, ComfyUI B-roll generation, FFmpeg encoding
+
+---
+# Rendering Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rendering
+  namespace: stream-pipeline
+  labels:
+    app: rendering
+    component: worker
+    gpu: required
+spec:
+  replicas: 2  # 2 rendering workers with GPU
+  selector:
+    matchLabels:
+      app: rendering
+  template:
+    metadata:
+      labels:
+        app: rendering
+        component: worker
+        gpu: required
+    spec:
+      # Node affinity: Schedule on GPU nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu
+                operator: Exists
+
+      containers:
+      - name: rendering
+        image: stream-pipeline-rendering:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9093
+          name: metrics
+        env:
+        # Database
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "stream_extraction"
+        - name: POSTGRES_USER
+          value: "pipeline_worker"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: POSTGRES_PASSWORD
+
+        # Redis
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: REDIS_PASSWORD
+
+        # GPU configuration
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"  # Will be overridden by k8s
+
+        # ComfyUI configuration
+        - name: COMFYUI_URL
+          value: "http://comfyui:8188"
+        - name: COMFYUI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: COMFYUI_API_KEY
+              optional: true
+
+        # Pixabay API (for stock B-roll)
+        - name: PIXABAY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: PIXABAY_API_KEY
+              optional: true
+
+        # Service configuration
+        - name: SERVICE_NAME
+          value: "rendering"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        volumeMounts:
+        - name: work
+          mountPath: /mnt/pipeline/work
+        - name: models
+          mountPath: /mnt/pipeline/models
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "16Gi"
+            cpu: "6"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "32Gi"
+            cpu: "12"
+            nvidia.com/gpu: 1
+
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 9093
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          timeoutSeconds: 30
+
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 15
+
+      volumes:
+      - name: work
+        persistentVolumeClaim:
+          claimName: pipeline-work-pvc
+      - name: models
+        hostPath:
+          path: /mnt/pipeline/models
+          type: DirectoryOrCreate
+      - name: config
+        hostPath:
+          path: /mnt/pipeline/config
+          type: Directory
+
+---
+# Rendering Service (for metrics)
+apiVersion: v1
+kind: Service
+metadata:
+  name: rendering
+  namespace: stream-pipeline
+  labels:
+    app: rendering
+    component: worker
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9093
+    targetPort: 9093
+    protocol: TCP
+    name: metrics
+  selector:
+    app: rendering

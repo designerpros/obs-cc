@@ -408,7 +408,7 @@ class SmartScheduler:
                     FROM platform_posts pp
                     WHERE
                         pp.platform = :platform
-                        AND pp.published_at >= NOW() - INTERVAL ':days days'
+                        AND pp.published_at >= NOW() - make_interval(days => :days)
                         AND pp.status = 'published'
                     GROUP BY
                         EXTRACT(HOUR FROM pp.published_at),

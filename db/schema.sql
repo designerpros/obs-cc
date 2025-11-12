@@ -218,6 +218,7 @@ CREATE INDEX idx_extractions_type ON extractions(type);
 CREATE TABLE platform_posts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     extraction_id UUID NOT NULL REFERENCES extractions(id) ON DELETE CASCADE,
+    stream_id UUID REFERENCES streams(id) ON DELETE CASCADE,
 
     -- Platform info
     platform TEXT NOT NULL CHECK (platform IN (
@@ -238,11 +239,15 @@ CREATE TABLE platform_posts (
     )),
     scheduled_time TIMESTAMPTZ,
     posted_time TIMESTAMPTZ,
+    published_at TIMESTAMPTZ, -- Actual publication time on platform
 
     -- Platform response
     platform_id TEXT, -- ID returned by platform (e.g., YouTube video ID)
     platform_url TEXT,
     late_job_id TEXT, -- LATE API job ID
+    late_post_id TEXT, -- LATE API post ID
+    late_response JSONB, -- Full LATE API response
+    error_message TEXT, -- Error details if posting failed
 
     -- A/B testing (thumbnails)
     thumbnail_variant INTEGER DEFAULT 1, -- 1 or 2
@@ -254,8 +259,12 @@ CREATE TABLE platform_posts (
     likes INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
     shares INTEGER DEFAULT 0,
+    saves INTEGER DEFAULT 0,
+    impressions INTEGER DEFAULT 0,
     ctr_percent FLOAT,
+    engagement_rate FLOAT,
     avg_watch_time_seconds FLOAT,
+    watch_time_seconds FLOAT,
     retention_percent FLOAT,
 
     last_analytics_update TIMESTAMPTZ,
@@ -270,10 +279,14 @@ CREATE TABLE platform_posts (
 );
 
 CREATE INDEX idx_posts_extraction_id ON platform_posts(extraction_id);
+CREATE INDEX idx_posts_stream_id ON platform_posts(stream_id);
 CREATE INDEX idx_posts_platform ON platform_posts(platform);
 CREATE INDEX idx_posts_status ON platform_posts(status);
 CREATE INDEX idx_posts_scheduled_time ON platform_posts(scheduled_time);
+CREATE INDEX idx_posts_published_at ON platform_posts(published_at);
 CREATE INDEX idx_posts_ctr ON platform_posts(ctr_percent DESC NULLS LAST);
+CREATE INDEX idx_posts_engagement_rate ON platform_posts(engagement_rate DESC NULLS LAST);
+CREATE INDEX idx_posts_views ON platform_posts(views DESC NULLS LAST);
 
 
 -- B-roll Library: Reusable AI-generated graphics

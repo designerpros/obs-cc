@@ -4,7 +4,7 @@ Prevents cascading failures with automatic retry and fallback logic
 """
 import asyncio
 from typing import Dict, Any, Optional, Callable, TypeVar, ParamSpec
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import functools
 
@@ -62,6 +62,7 @@ class CircuitBreaker:
         self.success_count = 0
         self.last_failure_time: Optional[datetime] = None
         self.opened_at: Optional[datetime] = None
+        self._lock = asyncio.Lock()
 
     async def call(
         self,
@@ -84,29 +85,32 @@ class CircuitBreaker:
             CircuitBreakerError: If circuit is open
             Original exception if function fails
         """
-        # Check if circuit is open
-        if self.state == CircuitState.OPEN:
-            if self._should_attempt_reset():
-                logger.info(f"Circuit breaker {self.name}: attempting reset (HALF_OPEN)")
-                self.state = CircuitState.HALF_OPEN
-            else:
-                wait_time = self._get_wait_time()
-                raise CircuitBreakerError(
-                    f"Circuit breaker {self.name} is OPEN "
-                    f"(retry in {wait_time:.0f}s)"
-                )
+        # Check if circuit is open (with lock)
+        async with self._lock:
+            if self.state == CircuitState.OPEN:
+                if self._should_attempt_reset():
+                    logger.info(f"Circuit breaker {self.name}: attempting reset (HALF_OPEN)")
+                    self.state = CircuitState.HALF_OPEN
+                else:
+                    wait_time = self._get_wait_time()
+                    raise CircuitBreakerError(
+                        f"Circuit breaker {self.name} is OPEN "
+                        f"(retry in {wait_time:.0f}s)"
+                    )
 
         try:
             # Execute function
             result = await func(*args, **kwargs)
 
             # Success - record it
-            self._on_success()
+            async with self._lock:
+                self._on_success()
             return result
 
         except self.expected_exception as e:
             # Failure - record it
-            self._on_failure()
+            async with self._lock:
+                self._on_failure()
             raise
 
     def _should_attempt_reset(self) -> bool:
@@ -114,7 +118,7 @@ class CircuitBreaker:
         if not self.opened_at:
             return True
 
-        elapsed = (datetime.utcnow() - self.opened_at).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - self.opened_at).total_seconds()
         return elapsed >= self.recovery_timeout
 
     def _get_wait_time(self) -> float:
@@ -122,7 +126,7 @@ class CircuitBreaker:
         if not self.opened_at:
             return 0.0
 
-        elapsed = (datetime.utcnow() - self.opened_at).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - self.opened_at).total_seconds()
         remaining = max(0, self.recovery_timeout - elapsed)
         return remaining
 
@@ -139,7 +143,7 @@ class CircuitBreaker:
     def _on_failure(self):
         """Handle failed call"""
         self.failure_count += 1
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime.now(timezone.utc)
 
         logger.warning(
             f"Circuit breaker {self.name}: failure {self.failure_count}/{self.failure_threshold}"
@@ -156,7 +160,7 @@ class CircuitBreaker:
         )
 
         self.state = CircuitState.OPEN
-        self.opened_at = datetime.utcnow()
+        self.opened_at = datetime.now(timezone.utc)
 
     def reset(self):
         """Manually reset circuit breaker"""

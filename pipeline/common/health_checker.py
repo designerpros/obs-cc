@@ -175,6 +175,22 @@ class HealthChecker:
         if self.service_name in ['transcription', 'rendering']:
             checks['gpu'] = await self._check_gpu()
 
+        # Whisper model check
+        if self.service_name == 'transcription':
+            checks['whisper_model'] = await self._check_whisper_model()
+
+        # S3 check (for archival service)
+        if self.service_name == 'archival':
+            checks['s3'] = await self._check_s3()
+
+        # Queue depth check (for all worker services)
+        if self.service_name in ['ingestion', 'transcription', 'analysis', 'rendering', 'posting', 'archival']:
+            checks['queue_depth'] = await self._check_queue_depth()
+
+        # Working directory check (for all services that write files)
+        if self.service_name in ['ingestion', 'transcription', 'rendering', 'archival']:
+            checks['working_directory'] = await self._check_working_directory()
+
         # External API checks
         if self.service_name == 'posting':
             checks['late_api'] = await self._check_late_api()
@@ -248,6 +264,164 @@ class HealthChecker:
             return {
                 'healthy': True,
                 'api_key_configured': True,
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+            }
+
+    async def _check_s3(self) -> Dict[str, Any]:
+        """Check S3 connectivity"""
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+
+            s3 = boto3.client('s3')
+            bucket = config.get('s3.bucket', 'bbb-pipeline-recordings')
+
+            # Try to list objects (with limit to avoid performance issues)
+            s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+
+            return {
+                'healthy': True,
+                'bucket': bucket,
+            }
+        except ClientError as e:
+            return {
+                'healthy': False,
+                'error': f'S3 error: {str(e)}',
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+            }
+
+    async def _check_whisper_model(self) -> Dict[str, Any]:
+        """Check Whisper model availability"""
+        try:
+            from pathlib import Path
+
+            model_path = Path(config.get('whisper.model_path', '/models/faster-whisper-large-v3'))
+
+            if model_path.exists() and model_path.is_dir():
+                # Check for required model files
+                required_files = ['model.bin', 'config.json']
+                missing_files = [f for f in required_files if not (model_path / f).exists()]
+
+                if missing_files:
+                    return {
+                        'healthy': False,
+                        'error': f'Missing model files: {missing_files}',
+                        'model_path': str(model_path),
+                    }
+
+                return {
+                    'healthy': True,
+                    'model_path': str(model_path),
+                }
+            else:
+                return {
+                    'healthy': False,
+                    'error': 'Model path does not exist',
+                    'model_path': str(model_path),
+                }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+            }
+
+    async def _check_queue_depth(self) -> Dict[str, Any]:
+        """Check Redis queue depth"""
+        try:
+            from ..common.queue import job_queue
+
+            if not job_queue or not job_queue.redis:
+                return {
+                    'healthy': False,
+                    'error': 'Queue not initialized',
+                }
+
+            # Get queue sizes for each job type
+            job_types = ['ingestion', 'transcription', 'analysis', 'rendering', 'posting', 'archival']
+            queue_sizes = {}
+            total_pending = 0
+
+            for job_type in job_types:
+                queue_key = f"queue:{job_type}:pending"
+                size = await job_queue.redis.llen(queue_key)
+                queue_sizes[job_type] = size
+                total_pending += size
+
+            # Warning if total queue depth > 100, critical if > 500
+            healthy = total_pending < 500
+
+            return {
+                'healthy': healthy,
+                'total_pending': total_pending,
+                'queue_sizes': queue_sizes,
+                'warning': total_pending > 100,
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'error': str(e),
+            }
+
+    async def _check_working_directory(self) -> Dict[str, Any]:
+        """Check working directory permissions"""
+        try:
+            from pathlib import Path
+            import tempfile
+
+            working_dir = Path(config.get('working_dir', '/workspace'))
+
+            # Check if directory exists
+            if not working_dir.exists():
+                return {
+                    'healthy': False,
+                    'error': 'Working directory does not exist',
+                    'path': str(working_dir),
+                }
+
+            # Check read permission
+            if not os.access(working_dir, os.R_OK):
+                return {
+                    'healthy': False,
+                    'error': 'No read permission',
+                    'path': str(working_dir),
+                }
+
+            # Check write permission by creating temp file
+            if not os.access(working_dir, os.W_OK):
+                return {
+                    'healthy': False,
+                    'error': 'No write permission',
+                    'path': str(working_dir),
+                }
+
+            # Try to create and delete a temp file
+            test_file = working_dir / '.health_check_test'
+            try:
+                test_file.write_text('test')
+                test_file.unlink()
+            except Exception as e:
+                return {
+                    'healthy': False,
+                    'error': f'Write test failed: {str(e)}',
+                    'path': str(working_dir),
+                }
+
+            # Check disk space in working directory
+            disk = psutil.disk_usage(str(working_dir))
+
+            return {
+                'healthy': True,
+                'path': str(working_dir),
+                'free_gb': disk.free / (1024**3),
+                'percent_used': disk.percent,
             }
         except Exception as e:
             return {

@@ -235,7 +235,7 @@ class CostTracker:
                         COUNT(DISTINCT stream_id) as stream_count,
                         SUM(cost_usd) as daily_cost
                     FROM cost_tracking
-                    WHERE created_at >= NOW() - INTERVAL ':days days'
+                    WHERE created_at >= NOW() - make_interval(days => :days)
                     GROUP BY DATE(created_at), operation_type
                     ORDER BY date DESC
                 """),

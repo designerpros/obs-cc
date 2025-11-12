@@ -91,7 +91,7 @@ class ABTestingFramework:
                         :id, :extraction_id, :platform, :test_type,
                         :variant_count, :variants, :status,
                         :min_sample_size, :confidence_level,
-                        NOW(), NOW() + INTERVAL ':duration hours'
+                        NOW(), NOW() + make_interval(hours => :duration)
                     )
                 """),
                 {
@@ -151,7 +151,7 @@ class ABTestingFramework:
                         :id, :extraction_id, :platform, :test_type,
                         :variant_count, :variants, :status,
                         :min_sample_size, :confidence_level,
-                        NOW(), NOW() + INTERVAL ':duration hours'
+                        NOW(), NOW() + make_interval(hours => :duration)
                     )
                 """),
                 {
@@ -411,7 +411,7 @@ class ABTestingFramework:
                         COUNT(*) FILTER (WHERE status = 'completed') as conclusive_tests,
                         COUNT(*) FILTER (WHERE status = 'inconclusive') as inconclusive_tests
                     FROM ab_tests
-                    WHERE started_at >= NOW() - INTERVAL ':days days'
+                    WHERE started_at >= NOW() - make_interval(days => :days)
                     GROUP BY test_type, platform
                 """),
                 {'days': days}

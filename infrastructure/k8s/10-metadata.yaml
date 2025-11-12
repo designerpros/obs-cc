@@ -1,0 +1,137 @@
+# Metadata Worker
+# Platform-specific metadata generation with LLM optimization
+
+---
+# Metadata Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata
+  namespace: stream-pipeline
+  labels:
+    app: metadata
+    component: worker
+spec:
+  replicas: 2  # 2 metadata workers
+  selector:
+    matchLabels:
+      app: metadata
+  template:
+    metadata:
+      labels:
+        app: metadata
+        component: worker
+    spec:
+      containers:
+      - name: metadata
+        image: stream-pipeline-metadata:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9096
+          name: metrics
+        env:
+        # Database
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "stream_extraction"
+        - name: POSTGRES_USER
+          value: "pipeline_worker"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: POSTGRES_PASSWORD
+
+        # Redis
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: REDIS_PASSWORD
+
+        # LLM API Keys (for metadata optimization)
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: ANTHROPIC_API_KEY
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: OPENAI_API_KEY
+
+        # Service configuration
+        - name: SERVICE_NAME
+          value: "metadata"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        volumeMounts:
+        - name: work
+          mountPath: /mnt/pipeline/work
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 9096
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 9096
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 10
+
+      volumes:
+      - name: work
+        persistentVolumeClaim:
+          claimName: pipeline-work-pvc
+      - name: config
+        hostPath:
+          path: /mnt/pipeline/config
+          type: Directory
+
+---
+# Metadata Service (for metrics)
+apiVersion: v1
+kind: Service
+metadata:
+  name: metadata
+  namespace: stream-pipeline
+  labels:
+    app: metadata
+    component: worker
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9096
+    targetPort: 9096
+    protocol: TCP
+    name: metrics
+  selector:
+    app: metadata

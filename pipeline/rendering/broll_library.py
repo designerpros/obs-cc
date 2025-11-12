@@ -98,7 +98,7 @@ class BRollLibrary:
                     AND width = :width
                     AND height = :height
                     AND 1 - (prompt_embedding <=> :search_embedding::vector) >= :threshold
-                    AND created_at > NOW() - INTERVAL ':max_age_days days'
+                    AND created_at > NOW() - make_interval(days => :max_age_days)
                 ORDER BY similarity DESC
                 LIMIT :limit
             """)
@@ -385,7 +385,7 @@ class BRollLibrary:
                     WHERE
                         quality_score < :min_quality
                         OR (
-                            created_at < NOW() - INTERVAL ':max_age days'
+                            created_at < NOW() - make_interval(days => :max_age)
                             AND usage_count < :min_usage
                         )
                     RETURNING id

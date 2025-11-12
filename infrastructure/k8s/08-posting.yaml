@@ -1,0 +1,134 @@
+# Posting Worker
+# Late API multi-platform posting and analytics collection
+
+---
+# Posting Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: posting
+  namespace: stream-pipeline
+  labels:
+    app: posting
+    component: worker
+spec:
+  replicas: 2  # 2 posting workers for parallel uploads
+  selector:
+    matchLabels:
+      app: posting
+  template:
+    metadata:
+      labels:
+        app: posting
+        component: worker
+    spec:
+      containers:
+      - name: posting
+        image: stream-pipeline-posting:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9094
+          name: metrics
+        env:
+        # Database
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "stream_extraction"
+        - name: POSTGRES_USER
+          value: "pipeline_worker"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: POSTGRES_PASSWORD
+
+        # Redis
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: REDIS_PASSWORD
+
+        # Late API
+        - name: LATE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pipeline-secrets
+              key: LATE_API_KEY
+        - name: LATE_API_URL
+          value: "https://api.late.gg"
+
+        # Service configuration
+        - name: SERVICE_NAME
+          value: "posting"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        volumeMounts:
+        - name: work
+          mountPath: /mnt/pipeline/work
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 9094
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 9094
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 10
+
+      volumes:
+      - name: work
+        persistentVolumeClaim:
+          claimName: pipeline-work-pvc
+      - name: config
+        hostPath:
+          path: /mnt/pipeline/config
+          type: Directory
+
+---
+# Posting Service (for metrics)
+apiVersion: v1
+kind: Service
+metadata:
+  name: posting
+  namespace: stream-pipeline
+  labels:
+    app: posting
+    component: worker
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9094
+    targetPort: 9094
+    protocol: TCP
+    name: metrics
+  selector:
+    app: posting
