@@ -1,0 +1,125 @@
+{
+  "dashboard": {
+    "title": "BBB Stream Pipeline - Performance Metrics",
+    "tags": ["pipeline", "performance"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 0,
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total Views (All Platforms)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(pipeline_post_views_total[1h])) by (platform)",
+            "legendFormat": "{{platform}}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Engagement Rate by Platform",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "avg(pipeline_post_engagement_rate) by (platform)",
+            "legendFormat": "{{platform}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percentunit",
+            "min": 0,
+            "max": 1
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Posts Published",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(pipeline_posts_published_total)"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Extractions Created (Last 24h)",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(increase(pipeline_extractions_created_total[24h]))"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Rendering Duration by Type",
+        "type": "heatmap",
+        "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(pipeline_rendering_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{extraction_type}} - {{format}}"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "LLM Tokens Used",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "rate(pipeline_llm_tokens_total[5m])",
+            "legendFormat": "{{model}} - {{token_type}}"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "GPU Utilization",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "pipeline_gpu_utilization_percent",
+            "legendFormat": "{{gpu_id}} - {{node}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "min": 0,
+            "max": 100
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "GPU Memory Usage",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "pipeline_gpu_memory_used_bytes",
+            "legendFormat": "{{gpu_id}} - {{node}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "bytes"
+          }
+        ]
+      }
+    ]
+  }
+}

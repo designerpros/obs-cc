@@ -1,0 +1,116 @@
+{
+  "dashboard": {
+    "title": "BBB Stream Pipeline - Overview",
+    "tags": ["pipeline", "overview"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 0,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Jobs",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "pipeline_active_jobs",
+            "legendFormat": "{{job_type}}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Job Processing Rate",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "rate(pipeline_jobs_processed_total[5m])",
+            "legendFormat": "{{job_type}} - {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Job Duration (p95)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(pipeline_job_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{job_type}}"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Streams Processed",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "pipeline_streams_processed_total"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "LLM API Cost (Last 24h)",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "increase(pipeline_llm_cost_usd_total[24h])"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "B-roll Reuse Rate",
+        "type": "gauge",
+        "gridPos": {"x": 12, "y": 12, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "pipeline_broll_reused_total / (pipeline_broll_reused_total + pipeline_broll_generated_total)"
+          }
+        ],
+        "options": {
+          "minValue": 0,
+          "maxValue": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "red"},
+              {"value": 0.3, "color": "yellow"},
+              {"value": 0.5, "color": "green"}
+            ]
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "Database Connections",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "pipeline_database_connections"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Redis Queue Size",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "pipeline_redis_queue_size",
+            "legendFormat": "{{job_type}}"
+          }
+        ]
+      }
+    ]
+  }
+}
