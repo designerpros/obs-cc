@@ -3,7 +3,7 @@ B-roll inserter - inserts AI-generated B-roll panels into video
 """
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import json
 import re
 import cv2
@@ -12,6 +12,7 @@ from loguru import logger
 
 from ..common.config import config
 from .comfyui_client import ComfyUIClient
+from .broll_library import BRollLibrary
 
 
 class BRollInserter:
@@ -29,6 +30,8 @@ class BRollInserter:
         self.comfyui_client = None
         self.generation_enabled = config.get('broll.generation.enabled', True)
         self.layout_mode = config.get('broll.insertion.layout', 'pip')  # 'pip' or 'replace'
+        self.library_enabled = config.get('broll.library.enabled', True)
+        self.broll_library = None
 
     async def initialize(self):
         """Initialize B-roll inserter"""
@@ -36,7 +39,17 @@ class BRollInserter:
             if self.generation_enabled:
                 self.comfyui_client = ComfyUIClient()
                 await self.comfyui_client.initialize()
-                logger.info(f"B-roll inserter initialized with ComfyUI generation (layout: {self.layout_mode})")
+
+                # Initialize library for reuse
+                if self.library_enabled:
+                    self.broll_library = BRollLibrary()
+                    await self.broll_library.initialize()
+                    logger.info(
+                        f"B-roll inserter initialized with ComfyUI generation and library reuse "
+                        f"(layout: {self.layout_mode})"
+                    )
+                else:
+                    logger.info(f"B-roll inserter initialized with ComfyUI generation (layout: {self.layout_mode})")
             else:
                 logger.info("B-roll inserter initialized (generation disabled)")
         else:
@@ -46,6 +59,8 @@ class BRollInserter:
         """Cleanup resources"""
         if self.comfyui_client:
             await self.comfyui_client.cleanup()
+        if self.broll_library:
+            await self.broll_library.cleanup()
         logger.info("B-roll inserter cleaned up")
 
     async def insert_broll(
@@ -94,6 +109,8 @@ class BRollInserter:
         # Generate B-roll panels
         style = topic_data.get('category', 'general')
         panels = []
+        reuse_count = 0
+        generation_count = 0
 
         for i, segment in enumerate(talking_segments):
             # Extract key phrases from topic for prompt
@@ -105,9 +122,9 @@ class BRollInserter:
             else:
                 width, height = 1080, 1920
 
-            # Generate panel
+            # Generate panel (may reuse from library)
             panel_path = output_dir / f"broll_panel_{i:03d}.png"
-            generated = await self._generate_broll_panel(
+            generated, was_reused = await self._generate_broll_panel_with_tracking(
                 prompt=prompt,
                 style=style,
                 output_dir=output_dir,
@@ -123,6 +140,12 @@ class BRollInserter:
                     'duration': segment['end'] - segment['start'],
                     'layout': self.layout_mode,
                 })
+
+                # Track statistics
+                if was_reused:
+                    reuse_count += 1
+                else:
+                    generation_count += 1
 
         if not panels:
             logger.warning("No B-roll panels generated")
@@ -141,12 +164,21 @@ class BRollInserter:
             format=format,
         )
 
-        logger.info(f"Inserted {len(panels)} B-roll panels into video")
+        # Calculate cost savings
+        reuse_rate = (reuse_count / len(panels) * 100) if panels else 0
+
+        logger.info(
+            f"Inserted {len(panels)} B-roll panels into video "
+            f"({reuse_count} reused, {generation_count} generated, {reuse_rate:.1f}% reuse rate)"
+        )
 
         return {
             'video_path': output_path,
             'style': style,
             'count': len(panels),
+            'reuse_count': reuse_count,
+            'generation_count': generation_count,
+            'reuse_rate': reuse_rate,
         }
 
     def _build_prompt_from_topic(
@@ -265,7 +297,7 @@ class BRollInserter:
 
         return motion_score
 
-    async def _generate_broll_panel(
+    async def _generate_broll_panel_with_tracking(
         self,
         prompt: str,
         style: str,
@@ -273,9 +305,9 @@ class BRollInserter:
         width: int,
         height: int,
         panel_path: Path,
-    ) -> Optional[Path]:
+    ) -> Tuple[Optional[Path], bool]:
         """
-        Generate B-roll panel using ComfyUI/SDXL
+        Generate B-roll panel using ComfyUI/SDXL or library reuse
 
         Args:
             prompt: Generation prompt
@@ -286,19 +318,44 @@ class BRollInserter:
             panel_path: Output path for panel
 
         Returns:
-            Path to generated image or None
+            Tuple of (image_path, was_reused)
         """
         if not self.comfyui_client:
             logger.warning("ComfyUI client not available")
-            return None
+            return None, False
 
-        return await self.comfyui_client.generate_broll(
+        # Phase 4: Check library first for reuse
+        if self.broll_library:
+            try:
+                generated_path, was_reused = await self.broll_library.get_or_generate(
+                    prompt=prompt,
+                    style=style,
+                    width=width,
+                    height=height,
+                    output_path=panel_path,
+                    comfyui_client=self.comfyui_client,
+                )
+
+                if was_reused:
+                    logger.debug("♻️  Reused B-roll from library")
+                else:
+                    logger.debug("✨ Generated new B-roll panel")
+
+                return generated_path, was_reused
+
+            except Exception as e:
+                logger.error(f"Error with library get_or_generate: {e}")
+                # Fall through to direct generation
+
+        # Fallback: Direct generation without library
+        generated = await self.comfyui_client.generate_broll(
             prompt=prompt,
             style=style,
             width=width,
             height=height,
             output_path=panel_path,
         )
+        return generated, False
 
     async def _insert_panels(
         self,

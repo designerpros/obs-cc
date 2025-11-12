@@ -281,37 +281,47 @@ CREATE TABLE broll_library (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
     -- Visual content
-    file_path TEXT NOT NULL UNIQUE,
-    style TEXT NOT NULL, -- 'ghibli', 'cyberpunk', etc.
+    image_path TEXT NOT NULL, -- Path to generated image
+    style TEXT NOT NULL, -- 'ghibli', 'cyberpunk', 'minimalist', 'cinematic', 'general'
     prompt TEXT NOT NULL, -- Original generation prompt
+
+    -- Dimensions (for matching)
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+
+    -- Deduplication
+    content_hash TEXT NOT NULL UNIQUE, -- SHA256 hash for deduplication
     file_size_bytes BIGINT,
-    duration_seconds FLOAT DEFAULT 4.0,
 
     -- Categorization
     topic_category TEXT, -- 'crypto', 'finance', 'policy', etc.
     keywords TEXT[],
     mood TEXT, -- 'energetic', 'calm', 'dramatic', etc.
 
-    -- Vector embedding for semantic search
-    embedding vector(768),
+    -- Vector embedding for semantic search (prompt-based)
+    prompt_embedding vector(768),
 
     -- Usage tracking
     usage_count INTEGER DEFAULT 0,
     last_used_at TIMESTAMPTZ,
 
     -- Quality scores
-    quality_score FLOAT, -- 0-100 from Stable Diffusion
+    quality_score FLOAT, -- 0-100 auto-calculated (resolution, blur, contrast)
     manual_rating INTEGER, -- 1-5 stars (optional manual curation)
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT valid_quality CHECK (quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 100))
+    CONSTRAINT valid_quality CHECK (quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 100)),
+    CONSTRAINT valid_dimensions CHECK (width > 0 AND height > 0)
 );
 
 CREATE INDEX idx_broll_style ON broll_library(style);
+CREATE INDEX idx_broll_dimensions ON broll_library(width, height);
 CREATE INDEX idx_broll_category ON broll_library(topic_category);
-CREATE INDEX idx_broll_embedding ON broll_library USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX idx_broll_content_hash ON broll_library(content_hash);
+CREATE INDEX idx_broll_embedding ON broll_library USING ivfflat (prompt_embedding vector_cosine_ops);
 CREATE INDEX idx_broll_usage ON broll_library(usage_count DESC);
+CREATE INDEX idx_broll_quality ON broll_library(quality_score DESC NULLS LAST);
 
 
 -- Jobs Queue: Redis-backed job tracking
@@ -360,6 +370,40 @@ CREATE INDEX idx_jobs_status ON jobs(status);
 CREATE INDEX idx_jobs_type ON jobs(job_type);
 CREATE INDEX idx_jobs_priority ON jobs(priority DESC);
 CREATE INDEX idx_jobs_created_at ON jobs(created_at);
+
+
+-- Cost Tracking: Monitor LLM and resource costs
+CREATE TABLE cost_tracking (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    stream_id UUID REFERENCES streams(id) ON DELETE CASCADE,
+
+    -- Operation details
+    operation_type TEXT NOT NULL, -- 'llm_call', 'broll_generation', 'compute', etc.
+    model TEXT, -- Model name (claude-3-5-sonnet, gpt-4o, comfyui-sdxl, etc.)
+
+    -- Token usage (for LLM calls)
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+
+    -- Cost
+    cost_usd NUMERIC(10, 6) NOT NULL, -- Cost in USD (6 decimal places for precision)
+
+    -- Metadata
+    metadata JSONB, -- Additional operation-specific data
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT valid_tokens CHECK (
+        (input_tokens IS NULL AND output_tokens IS NULL) OR
+        (input_tokens >= 0 AND output_tokens >= 0)
+    ),
+    CONSTRAINT valid_cost CHECK (cost_usd >= 0)
+);
+
+CREATE INDEX idx_cost_stream_id ON cost_tracking(stream_id);
+CREATE INDEX idx_cost_operation_type ON cost_tracking(operation_type);
+CREATE INDEX idx_cost_model ON cost_tracking(model);
+CREATE INDEX idx_cost_created_at ON cost_tracking(created_at DESC);
+CREATE INDEX idx_cost_usd ON cost_tracking(cost_usd DESC);
 
 
 -- ============================================================================
