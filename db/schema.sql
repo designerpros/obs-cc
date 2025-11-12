@@ -406,6 +406,66 @@ CREATE INDEX idx_cost_created_at ON cost_tracking(created_at DESC);
 CREATE INDEX idx_cost_usd ON cost_tracking(cost_usd DESC);
 
 
+-- A/B Tests: Title and thumbnail variant testing
+CREATE TABLE ab_tests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    extraction_id UUID NOT NULL REFERENCES extractions(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+
+    -- Test configuration
+    test_type TEXT NOT NULL CHECK (test_type IN ('title', 'thumbnail')),
+    variant_count INTEGER NOT NULL CHECK (variant_count >= 2 AND variant_count <= 4),
+    variants JSONB NOT NULL, -- {titles: [...]} or {thumbnails: [...]}
+
+    -- Test parameters
+    min_sample_size INTEGER NOT NULL DEFAULT 100,
+    confidence_level FLOAT NOT NULL DEFAULT 0.95,
+
+    -- Test lifecycle
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'inconclusive', 'cancelled')),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+
+    -- Results
+    winner_variant_index INTEGER, -- 0-indexed winner
+    results JSONB, -- Statistical analysis results
+
+    CONSTRAINT valid_confidence CHECK (confidence_level > 0 AND confidence_level < 1),
+    CONSTRAINT valid_winner CHECK (winner_variant_index IS NULL OR (winner_variant_index >= 0 AND winner_variant_index < variant_count))
+);
+
+CREATE INDEX idx_ab_tests_extraction ON ab_tests(extraction_id);
+CREATE INDEX idx_ab_tests_platform ON ab_tests(platform);
+CREATE INDEX idx_ab_tests_status ON ab_tests(status);
+CREATE INDEX idx_ab_tests_started ON ab_tests(started_at DESC);
+
+
+-- A/B Test Impressions: Individual impressions for each variant
+CREATE TABLE ab_test_impressions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    test_id UUID NOT NULL REFERENCES ab_tests(id) ON DELETE CASCADE,
+
+    -- Impression data
+    variant_index INTEGER NOT NULL, -- Which variant was shown (0-indexed)
+    clicked BOOLEAN NOT NULL DEFAULT FALSE, -- Whether user clicked/viewed
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_ab_impressions_test ON ab_test_impressions(test_id);
+CREATE INDEX idx_ab_impressions_variant ON ab_test_impressions(test_id, variant_index);
+
+
+-- Feedback Adaptations: Learning history from performance data
+CREATE TABLE feedback_adaptations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    adaptations JSONB NOT NULL -- Full adaptation report with changes made
+);
+
+CREATE INDEX idx_feedback_created ON feedback_adaptations(created_at DESC);
+
+
 -- ============================================================================
 -- VIEWS
 -- ============================================================================
