@@ -77,6 +77,10 @@ class LateAPIClient:
         Returns:
             Late job response
         """
+        # Check if initialized
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         # Validate platforms
         invalid_platforms = [p for p in platforms if p not in self.SUPPORTED_PLATFORMS]
         if invalid_platforms:
@@ -136,6 +140,9 @@ class LateAPIClient:
         Returns:
             Post status
         """
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         try:
             response = await self.http_client.get(f"/v1/posts/{post_id}")
             response.raise_for_status()
@@ -161,6 +168,9 @@ class LateAPIClient:
         Returns:
             Analytics data
         """
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         try:
             url = f"/v1/posts/{post_id}/analytics"
             if platform:
@@ -192,6 +202,9 @@ class LateAPIClient:
         Returns:
             Update result
         """
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         try:
             response = await self.http_client.patch(
                 f"/v1/posts/{post_id}/thumbnail",
@@ -227,6 +240,9 @@ class LateAPIClient:
         Returns:
             Comment result
         """
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         try:
             response = await self.http_client.post(
                 f"/v1/posts/{post_id}/comments",
@@ -259,6 +275,9 @@ class LateAPIClient:
         Returns:
             Next slot info
         """
+        if not self.http_client:
+            raise RuntimeError("Late API client not initialized. Call initialize() first.")
+
         try:
             response = await self.http_client.get(
                 f"/v1/queue/next-slot",

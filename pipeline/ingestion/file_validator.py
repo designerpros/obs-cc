@@ -30,6 +30,22 @@ class FileValidator:
     def __init__(self):
         pass
 
+    @staticmethod
+    def _safe_int(value, default=0):
+        """Safely convert value to int with fallback"""
+        try:
+            return int(value) if value not in (None, '') else default
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _safe_float(value, default=0.0):
+        """Safely convert value to float with fallback"""
+        try:
+            return float(value) if value not in (None, '') else default
+        except (ValueError, TypeError):
+            return default
+
     async def validate_folder(self, folder_path: Path) -> Dict[str, Any]:
         """
         Validate stream folder and detect source files
@@ -61,6 +77,9 @@ class FileValidator:
         # Try exact name matching first
         file_mapping = await self._exact_match(folder_path)
 
+        # Track whether smart detection was used
+        smart_detection_used = False
+
         # If missing required files, try smart detection
         missing_required = [
             src for src in self.REQUIRED_SOURCES
@@ -71,6 +90,7 @@ class FileValidator:
             logger.info(f"Exact match incomplete, using smart detection for: {missing_required}")
             detected_files = await self._smart_detect(folder_path, video_files, missing_required)
             file_mapping.update(detected_files)
+            smart_detection_used = bool(detected_files)
 
         # Check if all required files are present
         still_missing = [
@@ -122,7 +142,7 @@ class FileValidator:
             'valid': True,
             'errors': [],
             'file_mapping': file_mapping,
-            'requires_confirmation': len(detected_files) > 0 if 'detected_files' in locals() else False,
+            'requires_confirmation': smart_detection_used,
         }
 
     async def _exact_match(self, folder_path: Path) -> Dict[str, Path]:
@@ -219,13 +239,13 @@ class FileValidator:
                 return None
 
             return {
-                'width': int(video_stream.get('width', 0)),
-                'height': int(video_stream.get('height', 0)),
-                'duration': float(data.get('format', {}).get('duration', 0)),
-                'audio_channels': sum(int(s.get('channels', 0)) for s in audio_streams),
+                'width': self._safe_int(video_stream.get('width'), 0),
+                'height': self._safe_int(video_stream.get('height'), 0),
+                'duration': self._safe_float(data.get('format', {}).get('duration'), 0),
+                'audio_channels': sum(self._safe_int(s.get('channels'), 0) for s in audio_streams),
                 'audio_stream_count': len(audio_streams),
                 'codec': video_stream.get('codec_name', ''),
-                'bitrate': int(data.get('format', {}).get('bit_rate', 0)),
+                'bitrate': self._safe_int(data.get('format', {}).get('bit_rate'), 0),
             }
 
         except Exception as e:

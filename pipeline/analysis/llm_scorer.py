@@ -83,6 +83,30 @@ class LLMScorer:
 
         logger.info("LLM scorer cleaned up")
 
+    def _validate_score(self, score: float, llm_name: str) -> Optional[float]:
+        """
+        Validate and clamp score to 0-100 range
+
+        Args:
+            score: Raw score from LLM
+            llm_name: Name of LLM for logging
+
+        Returns:
+            Validated score in 0-100 range, or None if invalid
+        """
+        if score is None:
+            return None
+
+        try:
+            score = float(score)
+            if score < 0 or score > 100:
+                logger.warning(f"{llm_name} returned out-of-range score: {score}, clamping to 0-100")
+                return max(0.0, min(100.0, score))
+            return score
+        except (ValueError, TypeError) as e:
+            logger.error(f"{llm_name} returned invalid score: {score} ({e})")
+            return None
+
     async def score_topic(
         self,
         topic: Dict[str, Any],
@@ -123,9 +147,12 @@ class LLMScorer:
 
         if grok_score < 70:
             logger.info(f"Topic '{topic['title'][:30]}' rejected by Grok ({grok_score})")
+            # Calculate consensus score safely
+            scores_for_avg = [s for s in [llama_score, grok_score] if s is not None]
+            consensus_score = sum(scores_for_avg) / len(scores_for_avg) if scores_for_avg else 0
             return {
                 'llm_scores': {'llama': llama_score, 'grok': grok_score},
-                'consensus_score': (llama_score + grok_score) / 2 if llama_score else grok_score,
+                'consensus_score': consensus_score,
                 'consensus_approved': False,
             }
 
@@ -133,18 +160,21 @@ class LLMScorer:
         claude_score = await self._score_with_claude(prompt)
 
         # Check if we have 2/2 high confidence (Grok + Claude both ≥80)
-        if grok_score >= self.min_score and claude_score >= self.min_score:
+        if grok_score is not None and claude_score is not None and grok_score >= self.min_score and claude_score >= self.min_score:
             logger.info(
                 f"Topic '{topic['title'][:30]}' approved by Grok+Claude "
                 f"({grok_score}, {claude_score})"
             )
+            # Calculate consensus score safely
+            scores_for_avg = [s for s in [grok_score, claude_score] if s is not None]
+            consensus_score = sum(scores_for_avg) / len(scores_for_avg) if scores_for_avg else 0
             return {
                 'llm_scores': {
                     'llama': llama_score,
                     'grok': grok_score,
                     'claude': claude_score,
                 },
-                'consensus_score': (grok_score + claude_score) / 2,
+                'consensus_score': consensus_score,
                 'consensus_approved': True,
             }
 
@@ -166,10 +196,21 @@ class LLMScorer:
             all_scores['llama'] = llama_score
 
         # Calculate consensus (need 3/4 ≥ min_score)
+        # Filter out None values and validate scores
         api_scores = [grok_score, claude_score, gpt_score, pplx_score]
-        passing_count = sum(1 for s in api_scores if s >= self.min_score)
+        valid_scores = [s for s in api_scores if s is not None and isinstance(s, (int, float))]
 
-        consensus_score = sum(api_scores) / len(api_scores)
+        if not valid_scores:
+            logger.error("No valid API scores received")
+            return {
+                'llm_scores': all_scores,
+                'consensus_score': 0,
+                'consensus_approved': False,
+                'error': 'No valid LLM responses',
+            }
+
+        passing_count = sum(1 for s in valid_scores if s >= self.min_score)
+        consensus_score = sum(valid_scores) / len(valid_scores)
 
         if passing_count >= 3:
             logger.info(
@@ -183,7 +224,7 @@ class LLMScorer:
             }
 
         # Try lower threshold fallback (≥70)
-        passing_count_70 = sum(1 for s in api_scores if s >= self.fallback_score)
+        passing_count_70 = sum(1 for s in valid_scores if s >= self.fallback_score)
 
         if passing_count_70 >= 3:
             logger.info(
@@ -290,13 +331,14 @@ Overall score should be the average of all criteria."""
 
             if json_match:
                 result = json.loads(json_match.group(0))
-                return float(result.get('overall_score', 0))
+                raw_score = result.get('overall_score', 0)
+                return self._validate_score(raw_score, 'Grok')
 
             return 0.0
 
         except Exception as e:
             logger.error(f"Grok API error: {e}")
-            return 50.0  # Neutral score on error
+            return None  # Return None to indicate failure
 
     async def _score_with_claude(self, prompt: str) -> float:
         """Score with Claude API"""
@@ -317,13 +359,14 @@ Overall score should be the average of all criteria."""
 
             if json_match:
                 result = json.loads(json_match.group(0))
-                return float(result.get('overall_score', 0))
+                raw_score = result.get('overall_score', 0)
+                return self._validate_score(raw_score, 'Claude')
 
             return 0.0
 
         except Exception as e:
             logger.error(f"Claude API error: {e}")
-            return 50.0
+            return None  # Return None to indicate failure
 
     async def _score_with_gpt4o(self, prompt: str) -> float:
         """Score with GPT-4o API"""
@@ -344,13 +387,14 @@ Overall score should be the average of all criteria."""
 
             if json_match:
                 result = json.loads(json_match.group(0))
-                return float(result.get('overall_score', 0))
+                raw_score = result.get('overall_score', 0)
+                return self._validate_score(raw_score, 'GPT-4o')
 
             return 0.0
 
         except Exception as e:
             logger.error(f"GPT-4o API error: {e}")
-            return 50.0
+            return None  # Return None to indicate failure
 
     async def _score_with_perplexity(self, prompt: str) -> float:
         """Score with Perplexity API"""
@@ -381,13 +425,14 @@ Overall score should be the average of all criteria."""
 
             if json_match:
                 result = json.loads(json_match.group(0))
-                return float(result.get('overall_score', 0))
+                raw_score = result.get('overall_score', 0)
+                return self._validate_score(raw_score, 'Perplexity')
 
             return 0.0
 
         except Exception as e:
             logger.error(f"Perplexity API error: {e}")
-            return 50.0
+            return None  # Return None to indicate failure
 
 
 logger.info("LLM scorer module loaded")
