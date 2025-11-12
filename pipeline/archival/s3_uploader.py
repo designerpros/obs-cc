@@ -59,7 +59,21 @@ class S3Uploader:
     async def cleanup(self):
         """Cleanup resources"""
         if self.s3_client:
-            self.s3_client = None
+            try:
+                # Try to close the client properly
+                # Modern boto3 has a close() method
+                if hasattr(self.s3_client, 'close'):
+                    self.s3_client.close()
+                    logger.debug("S3 client closed via close() method")
+                # For older boto3, close the underlying HTTP session
+                elif hasattr(self.s3_client, '_endpoint'):
+                    if hasattr(self.s3_client._endpoint, 'http_session'):
+                        self.s3_client._endpoint.http_session.close()
+                        logger.debug("S3 client HTTP session closed")
+            except Exception as e:
+                logger.warning(f"Error closing S3 client (non-critical): {e}")
+            finally:
+                self.s3_client = None
         logger.info("S3 uploader cleaned up")
 
     async def _ensure_buckets(self):

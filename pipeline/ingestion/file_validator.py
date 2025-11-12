@@ -120,9 +120,23 @@ class FileValidator:
                 validation_errors.append(f"{source_type} not found: {file_path}")
                 continue
 
+            # Use different size thresholds for different source types
+            min_sizes = {
+                'cam_main_me': 1024 * 1024,  # 1MB for main camera
+                'live_mix': 1024 * 1024,     # 1MB for live mix
+                'cam_overhead': 512 * 1024,  # 512KB for overhead
+                'cam_screen': 512 * 1024,    # 512KB for screen share
+                'cam_guest': 512 * 1024,     # 512KB for guest cam
+                'cam_online_caller': 512 * 1024,  # 512KB for caller
+            }
+
+            min_size = min_sizes.get(source_type, 512 * 1024)  # Default 512KB
             file_size = file_path.stat().st_size
-            if file_size < 1024 * 1024:  # Less than 1MB
-                validation_errors.append(f"{source_type} is too small: {file_size} bytes")
+
+            if file_size < min_size:
+                validation_errors.append(
+                    f"{source_type} is too small: {file_size} bytes (minimum: {min_size})"
+                )
                 continue
 
             # Validate it's a valid video file (check with ffprobe)

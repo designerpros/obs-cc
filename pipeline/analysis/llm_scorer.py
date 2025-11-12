@@ -122,6 +122,10 @@ class LLMScorer:
         Returns:
             Scoring result with consensus decision
         """
+        # Check if initialized
+        if not self.http_client:
+            raise RuntimeError("LLM scorer not initialized. Call initialize() first.")
+
         # Build scoring prompt
         prompt = self._build_scoring_prompt(topic)
 

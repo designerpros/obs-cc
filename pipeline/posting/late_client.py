@@ -114,7 +114,12 @@ class LateAPIClient:
 
         # Make API request
         try:
-            response = await self.http_client.post("/v1/posts", json=payload)
+            # Use longer timeout for post scheduling (uploading media)
+            response = await self.http_client.post(
+                "/v1/posts",
+                json=payload,
+                timeout=httpx.Timeout(60.0, connect=10.0)
+            )
             response.raise_for_status()
 
             result = response.json()
@@ -144,7 +149,10 @@ class LateAPIClient:
             raise RuntimeError("Late API client not initialized. Call initialize() first.")
 
         try:
-            response = await self.http_client.get(f"/v1/posts/{post_id}")
+            response = await self.http_client.get(
+                f"/v1/posts/{post_id}",
+                timeout=httpx.Timeout(10.0, connect=5.0)
+            )
             response.raise_for_status()
 
             return response.json()
@@ -176,7 +184,10 @@ class LateAPIClient:
             if platform:
                 url += f"?platform={platform}"
 
-            response = await self.http_client.get(url)
+            response = await self.http_client.get(
+                url,
+                timeout=httpx.Timeout(30.0, connect=5.0)
+            )
             response.raise_for_status()
 
             return response.json()
@@ -212,6 +223,7 @@ class LateAPIClient:
                     "platform": platform,
                     "thumbnailUrl": thumbnail_url,
                 },
+                timeout=httpx.Timeout(30.0, connect=5.0)
             )
             response.raise_for_status()
 
@@ -251,6 +263,7 @@ class LateAPIClient:
                     "text": comment_text,
                     "pin": pin,
                 },
+                timeout=httpx.Timeout(15.0, connect=5.0)
             )
             response.raise_for_status()
 
@@ -285,6 +298,7 @@ class LateAPIClient:
                     "profileId": profile_id,
                     "platform": platform,
                 },
+                timeout=httpx.Timeout(10.0, connect=5.0)
             )
             response.raise_for_status()
 
