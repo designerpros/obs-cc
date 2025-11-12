@@ -30,13 +30,25 @@ class Config:
             logger.error(f"Configuration file not found: {CONFIG_PATH}")
             raise FileNotFoundError(f"Configuration file not found: {CONFIG_PATH}")
 
-        with open(CONFIG_PATH, 'r') as f:
-            self._config = yaml.safe_load(f)
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                self._config = yaml.safe_load(f)
 
-        # Expand environment variables
-        self._expand_env_vars(self._config)
+            # Validate config is a dictionary
+            if not isinstance(self._config, dict):
+                raise ValueError("Configuration must be a YAML dictionary")
 
-        logger.info(f"Loaded configuration from {CONFIG_PATH}")
+            # Expand environment variables
+            self._expand_env_vars(self._config)
+
+            logger.info(f"Loaded configuration from {CONFIG_PATH}")
+
+        except yaml.YAMLError as e:
+            logger.error(f"Invalid YAML in configuration file: {e}")
+            raise ValueError(f"Invalid YAML in configuration file: {e}")
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            raise
 
     def _expand_env_vars(self, config: Any):
         """Recursively expand environment variables in config"""
@@ -49,7 +61,13 @@ class Config:
                         var_name, default = env_var.split(':-', 1)
                         config[key] = os.getenv(var_name, default)
                     else:
-                        config[key] = os.getenv(env_var, value)
+                        # For ${VAR} without default, log warning if not found
+                        env_value = os.getenv(env_var)
+                        if env_value is None:
+                            logger.warning(
+                                f"Environment variable '{env_var}' not set in config path '{key}'"
+                            )
+                        config[key] = env_value
                 elif isinstance(value, (dict, list)):
                     self._expand_env_vars(value)
         elif isinstance(config, list):

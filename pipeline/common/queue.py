@@ -159,6 +159,11 @@ class JobQueue:
         if not result:
             return None
 
+        # Validate result structure before unpacking
+        if not isinstance(result, (tuple, list)) or len(result) != 3:
+            logger.error(f"Unexpected bzpopmin result format: {result}")
+            return None
+
         _, job_id_bytes, _ = result
         job_id = job_id_bytes if isinstance(job_id_bytes, str) else job_id_bytes.decode()
 

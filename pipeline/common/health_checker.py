@@ -345,13 +345,14 @@ class HealthChecker:
                 }
 
             # Get queue sizes for each job type
+            # Queues are sorted sets (zadd), so use zcard not llen
             job_types = ['ingestion', 'transcription', 'analysis', 'rendering', 'posting', 'archival']
             queue_sizes = {}
             total_pending = 0
 
             for job_type in job_types:
-                queue_key = f"queue:{job_type}:pending"
-                size = await job_queue.redis.llen(queue_key)
+                queue_key = f"queue:{job_type}"  # Correct key format
+                size = await job_queue.redis.zcard(queue_key)  # Use zcard for sorted sets
                 queue_sizes[job_type] = size
                 total_pending += size
 

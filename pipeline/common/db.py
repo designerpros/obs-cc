@@ -33,6 +33,9 @@ engine = create_async_engine(
     echo=os.getenv('DEBUG', 'false').lower() == 'true',
     pool_size=int(os.getenv('DB_POOL_SIZE', '20')),
     max_overflow=int(os.getenv('DB_MAX_OVERFLOW', '10')),
+    pool_recycle=3600,  # Recycle connections after 1 hour to prevent stale connections
+    pool_pre_ping=True,  # Verify connections before using them
+    pool_timeout=30,  # Timeout for getting connection from pool
 )
 
 # Create session factory
