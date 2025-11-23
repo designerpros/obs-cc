@@ -17,7 +17,14 @@ from .transcription import TranscriptionManager
 from .news_fetcher import NewsFetcher
 from .context_matcher import ContextMatcher
 
-# Optional audio capture modules
+# Setup logging FIRST (before any logger usage)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Optional audio capture modules (logger now available)
 try:
     from .audio_capture import SystemAudioCapture
     SYSTEM_AUDIO_AVAILABLE = True
@@ -30,13 +37,7 @@ try:
     FILE_MONITOR_AVAILABLE = True
 except ImportError:
     FILE_MONITOR_AVAILABLE = False
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+    logger.warning("Audio file monitor not available")
 
 # Load configuration
 CONFIG_PATH = Path(__file__).parent.parent / "config.json"
@@ -50,13 +51,18 @@ with open(CONFIG_PATH) as f:
 # Initialize FastAPI app
 app = FastAPI(title="OBS News Ticker Backend")
 
-# Add CORS middleware
+# Add CORS middleware - restricted to localhost for security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://localhost:*",  # Any port on localhost
+        "http://127.0.0.1:*",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],  # Only needed methods
+    allow_headers=["Content-Type"],
 )
 
 # Global state
@@ -188,10 +194,23 @@ async def websocket_audio(websocket: WebSocket):
     await websocket.accept()
     logger.info("Audio WebSocket connection established")
 
+    MAX_AUDIO_CHUNK = 1024 * 1024  # 1 MB per chunk to prevent memory exhaustion
+
     try:
         while True:
             # Receive audio data
             data = await websocket.receive_bytes()
+
+            # Validate chunk size to prevent DoS attacks
+            if len(data) > MAX_AUDIO_CHUNK:
+                logger.error(f"Audio chunk too large: {len(data)} bytes")
+                await websocket.close(code=1009, reason="Message too large")
+                break
+
+            # Validate data is not empty
+            if not data:
+                logger.warning("Received empty audio data")
+                continue
 
             # Send to transcription manager
             await transcription_manager.process_audio(data)
@@ -243,7 +262,9 @@ async def trigger_update():
                 "message": "No context available, using top news"
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log the full error for debugging, but don't expose details to client
+        logger.error(f"Error in trigger_update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update headlines")
 
 
 if __name__ == "__main__":
